@@ -6,6 +6,7 @@ This repository now contains the first working baseline for the project:
 - a simple line-based TCP server
 - an interactive client
 - a smoke test for the store
+- a technical implementation overview in [docs/IMPLEMENTATION_OVERVIEW.md](./docs/IMPLEMENTATION_OVERVIEW.md)
 
 ## Build
 
