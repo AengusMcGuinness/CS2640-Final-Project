@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -17,6 +18,15 @@ bool set_reuseaddr(int fd) {
 }
 
 }  // namespace
+
+bool set_non_blocking(int fd) {
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        return false;
+    }
+
+    return ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
 
 int create_server_socket(std::uint16_t port, int backlog) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -40,6 +50,11 @@ int create_server_socket(std::uint16_t port, int backlog) {
     }
 
     if (::listen(fd, backlog) < 0) {
+        close_socket(fd);
+        return -1;
+    }
+
+    if (!set_non_blocking(fd)) {
         close_socket(fd);
         return -1;
     }

@@ -1,3 +1,52 @@
+# Progress Update
+
+## Project Status
+
+Since writing this proposal, I have built the first working baseline of the system. The repository now includes a thread-safe in-memory key-value store, a TCP client/server pair, and a small smoke test. The server has also been refactored from a one-thread-per-connection model to a single-threaded, coroutine-driven event loop using nonblocking sockets. This is an important step because it makes the TCP baseline closer to the structure of a high-performance server and gives me a cleaner foundation for comparing against RDMA later.
+
+## What Has Been Implemented
+
+The main pieces completed so far are:
+
+- a `KeyValueStore` backed by `std::unordered_map`
+- request parsing for `SET`, `GET`, `DEL`, and `QUIT`
+- a line-oriented TCP protocol with simple text responses
+- a client executable for interactive testing
+- a server executable that accepts connections and processes requests
+- a coroutine/event-loop layer that uses `poll` to wait for socket readiness
+- a unit test that validates basic key-value store behavior
+
+The code is organized so that storage, protocol, and transport logic are separated. That separation matters for the rest of the project because it lets me swap in two-sided RDMA and one-sided RDMA without redesigning the application semantics.
+
+## Preliminary Results
+
+I have already verified the baseline in three ways:
+
+- the project builds successfully with CMake
+- the key-value store unit test passes
+- an end-to-end client/server smoke test succeeds over localhost
+
+In the smoke test, the server correctly handled `SET foo bar`, `GET foo`, `DEL foo`, and `QUIT`, returning `OK`, `VALUE bar`, `OK`, `NOT_FOUND`, and `BYE` in order. This confirms that the request parser, server dispatch path, store, and response formatting are all wired together correctly.
+
+## Challenges So Far
+
+The biggest technical challenge has been designing the server in a way that is simple enough to implement now but still realistic for later performance work. A thread-per-connection server is easy to write, but it would distort performance results and make the TCP baseline less comparable to RDMA. To address that, I switched to a nonblocking event-loop design using C++20 coroutines.
+
+That refactor introduced a few practical issues:
+
+- the project had to be moved from C++17 to C++20 to enable coroutines
+- socket descriptors had to be made nonblocking
+- the event loop had to safely resume suspended coroutines when sockets became readable or writable
+- the server needed careful handling of partial reads and partial writes
+
+Another challenge is keeping the implementation measurable. Since the project is about comparing communication mechanisms, I need to avoid mixing transport overhead with unrelated bottlenecks. For that reason, I am keeping the protocol simple and the key-value operations minimal at this stage.
+
+## Next Steps
+
+The next major step is to add a benchmark harness that can generate controlled workloads and measure throughput and latency under different access patterns. After that, I plan to define a stable memory layout for remote objects and begin the RDMA implementation. I also want to simulate metadata updates, such as recency tracking, so I can measure how cache-eviction-style bookkeeping affects the performance advantage of one-sided reads.
+
+---
+
 # Distributed Caching with RDMA
 
 ## Problem

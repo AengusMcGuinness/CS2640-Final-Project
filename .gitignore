@@ -1,4 +1,10 @@
 build/
+.venv-plot/
+.mplconfig/
+.cache/
+word-docx/
+__pycache__/
+.#*
 *.o
 *.obj
 *.out

@@ -1,6 +1,6 @@
 # Implementation Overview
 
-This repository currently contains the first working baseline for the CS2640 final project: a thread-safe in-memory key-value store, a line-oriented TCP server/client pair, and a small smoke test. The design is intentionally simple so that later work on RDMA can reuse the same storage and protocol layers without rewriting the application logic.
+This repository currently contains the first working baseline for the CS2640 final project: a thread-safe in-memory key-value store, a line-oriented TCP server/client pair, and a small smoke test. The server is implemented as a single-threaded, coroutine-driven, nonblocking event loop so that the TCP baseline already resembles the shape of a high-performance transport. The design is intentionally simple so that later work on RDMA can reuse the same storage and protocol layers without rewriting the application logic.
 
 ## System Goal
 
@@ -18,7 +18,7 @@ The code is organized to mirror those layers:
 
 - `include/kvstore/` and `src/kvstore/`: storage interface and implementation
 - `include/protocol/` and `src/protocol/`: request parsing and response formatting
-- `include/net/` and `src/net/`: socket helper functions
+- `include/net/` and `src/net/`: socket helper functions and the coroutine event loop
 - `src/server/`: server entry point and request handling loop
 - `src/client/`: interactive client used for manual testing
 - `tests/`: smoke test for the in-memory store
@@ -80,17 +80,18 @@ This explicit response format is useful for debugging because it can be inspecte
 
 ## Transport Layer
 
-The current transport is TCP, implemented using POSIX sockets in `src/net/socket_utils.cpp`.
+The current transport is TCP, implemented using POSIX sockets in `src/net/socket_utils.cpp`, with coroutine scheduling logic in `src/net/event_loop.cpp`.
 
 Key helper functions:
 
 - `create_server_socket(port, backlog)`: creates, binds, and listens on a socket
 - `create_client_socket(host, port)`: resolves a host and connects
+- `set_non_blocking(fd)`: switches a descriptor into nonblocking mode
 - `read_line(fd, line)`: reads one newline-delimited request from a stream socket
 - `write_all(fd, data)`: ensures the full response is transmitted
 - `close_socket(fd)`: closes the file descriptor safely
 
-The server listens on a port, accepts clients, and processes each connection on its own detached `std::thread`. That concurrency model is simple and easy to reason about for a prototype. It is not the most scalable design, but it is enough to establish a working baseline and measure transport overhead.
+The server listens on a port, accepts clients, and drives each client connection through a coroutine. The accept path waits for the listening socket to become readable, accepts as many pending clients as possible, sets each accepted socket to nonblocking mode, and then spawns a per-connection coroutine. Each connection coroutine reads available bytes, accumulates them into an input buffer, parses full newline-delimited requests, and writes responses back using the same nonblocking pattern.
 
 ## Request Flow
 
@@ -111,9 +112,9 @@ For a `GET`, the hot path is small: parse, map lookup, response formatting. For 
 Concurrency is handled at two levels:
 
 - **Per-store synchronization**: one mutex protects the map from concurrent modification and lookup races.
-- **Per-connection threading**: each accepted TCP client runs in its own detached thread.
+- **Event-driven multiplexing**: a single `EventLoop` instance polls readiness across sockets and resumes suspended coroutines when their descriptors become readable or writable.
 
-This design favors correctness and simplicity over maximum throughput. It is appropriate for a baseline because the project’s goal is to compare communication mechanisms, not to engineer the most optimized server possible. Later, the same storage interface could be paired with a thread pool, event loop, or asynchronous RDMA completion model if the experiments require it.
+This design removes the overhead of one-thread-per-connection while staying simple enough to reason about. It also matches the basic control-flow structure of many high-performance network servers: a small number of threads, nonblocking descriptors, and explicit readiness notifications. Later, the same storage interface could be paired with an RDMA completion queue or a different polling backend without changing request semantics.
 
 ## Testing and Verification
 
@@ -125,7 +126,7 @@ The current test suite is a smoke test for the storage layer. It verifies:
 - overwriting an existing key works
 - `erase` removes a key and reports success or failure correctly
 
-The repository was also verified with a real client/server interaction. That is important because unit tests alone do not prove the socket path is wired correctly. The smoke test confirms the RPC baseline is functional before RDMA work begins.
+The repository was also verified with a real client/server interaction. That is important because unit tests alone do not prove the socket path is wired correctly. The smoke test confirms the coroutine-based RPC baseline is functional before RDMA work begins.
 
 ## Why This Structure Works for RDMA
 
@@ -136,4 +137,3 @@ The proposal’s later phases depend on keeping semantics stable while changing 
 - One-sided RDMA: clients read remote memory directly
 
 Because the protocol and store are already isolated, RDMA work can focus on the transport and memory layout instead of rethinking the whole application. In practice, the next major steps are to add a benchmark harness, define a fixed object layout for remote memory, and then introduce two-sided and one-sided RDMA paths that reuse the same workload generation code.
-
