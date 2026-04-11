@@ -1,11 +1,17 @@
+// The protocol layer is the unit under test here.
 #include "protocol/text_protocol.hpp"
 
+// Standard exit codes for a standalone test executable.
 #include <cstdlib>
+// Console output is used for assertion failures and success banners.
 #include <iostream>
+// Strings are used in expected request and response payloads.
 #include <string>
 
+// Keep helper functions private to this file.
 namespace {
 
+// Small assertion helper that prints the failure and returns a nonzero code.
 int expect(bool condition, const char* message) {
     if (!condition) {
         std::cerr << "test failed: " << message << '\n';
@@ -16,11 +22,14 @@ int expect(bool condition, const char* message) {
 
 }  // namespace
 
+// Validate parsing and serialization across the supported wire format.
 int main() {
+    // Bring the protocol enum names into local scope for readability in the checks below.
     using protocol::RequestType;
     using protocol::Response;
     using protocol::ResponseType;
 
+    // Parse a simple GET request with a single key.
     {
         const auto request = protocol::parse_request("GET alpha");
         if (int rc = expect(request.type == RequestType::Get, "GET should parse"); rc != 0) {
@@ -31,6 +40,7 @@ int main() {
         }
     }
 
+    // Parse SET, including extra surrounding whitespace and mixed case.
     {
         const auto request = protocol::parse_request("  set beta value  ");
         if (int rc = expect(request.type == RequestType::Set, "SET should parse case-insensitively"); rc != 0) {
@@ -44,6 +54,7 @@ int main() {
         }
     }
 
+    // DEL should be accepted as a one-argument delete command.
     {
         const auto request = protocol::parse_request("DEL gamma");
         if (int rc = expect(request.type == RequestType::Del, "DEL should parse"); rc != 0) {
@@ -51,6 +62,7 @@ int main() {
         }
     }
 
+    // QUIT is the session-closing command.
     {
         const auto request = protocol::parse_request("quit");
         if (int rc = expect(request.type == RequestType::Quit, "QUIT should parse"); rc != 0) {
@@ -58,6 +70,7 @@ int main() {
         }
     }
 
+    // GET with too many arguments should be rejected.
     {
         const auto request = protocol::parse_request("GET a b");
         if (int rc = expect(request.type == RequestType::Invalid, "invalid GET should be rejected"); rc != 0) {
@@ -65,6 +78,7 @@ int main() {
         }
     }
 
+    // SET with too few arguments should also be rejected.
     {
         const auto request = protocol::parse_request("SET only-key");
         if (int rc = expect(request.type == RequestType::Invalid, "invalid SET should be rejected"); rc != 0) {
@@ -72,6 +86,7 @@ int main() {
         }
     }
 
+    // Verify each response kind serializes to the exact expected wire format.
     {
         if (int rc = expect(protocol::serialize_response({ResponseType::Ok, {}}) == "OK\n", "serialize OK"); rc != 0) {
             return rc;
@@ -90,6 +105,7 @@ int main() {
         }
     }
 
+    // Print a success message so the test can be run manually without ambiguity.
     std::cout << "protocol_test passed\n";
     return EXIT_SUCCESS;
 }
