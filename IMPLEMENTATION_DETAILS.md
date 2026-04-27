@@ -16,7 +16,7 @@ This is the quick-start guide. It explains how to build the project, run the ser
 
 ### `PROPOSAL.md`
 
-This is the original project proposal with a progress update at the top. It remains important because the checkpoint and final report build on the same research goal, and the progress section shows how the actual implementation evolved.
+	This is the original project proposal with a progress update at the top. It remains important because the checkpoint and final report build on the same research goal, and the progress section shows how the actual implementation evolved.
 
 ### `CHECKPOINT.md`
 

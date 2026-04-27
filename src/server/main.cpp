@@ -215,7 +215,7 @@ net::EventLoop::Task accept_loop(EventLoop& loop, kvstore::KeyValueStore& store,
 // Parse the port, start the server socket, and run the event loop.
 int main(int argc, char* argv[]) {
     // Default to 9090 unless the user overrides the port on the command line.
-    const std::uint16_t port = static_cast<sgtd::uint16_t>(argc > 1 ? std::stoi(argv[1]) : 9090);
+    const std::uint16_t port = static_cast<std::uint16_t>(argc > 1 ? std::stoi(argv[1]) : 9090);
 
     // Create the listening TCP socket and bind it to the requested port.
     int server_fd = net::create_server_socket(port);
