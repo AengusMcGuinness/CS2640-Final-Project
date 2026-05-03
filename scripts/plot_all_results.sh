@@ -95,7 +95,16 @@ if [[ -s "$EXPERIMENTS_DIR/rdma_one_sided_clients.csv" &&
     --outdir "$PLOTS_DIR/metadata_overhead" \
     --title "One-Sided RDMA: LRU Metadata Overhead"
 else
-  echo "skip: metadata plots need one-sided no-metadata and metadata CSVs"
+  echo "skip: metadata plots need both one-sided CSVs:"
+  for needed in \
+    "$EXPERIMENTS_DIR/rdma_one_sided_clients.csv" \
+    "$EXPERIMENTS_DIR/rdma_one_sided_metadata.csv"; do
+    if [[ -s "$needed" ]]; then
+      echo "  ok: $needed"
+    else
+      echo "  missing or empty: $needed"
+    fi
+  done
 fi
 
 if [[ -s "$EXPERIMENTS_DIR/cpu_utilization.csv" ]]; then
@@ -106,6 +115,7 @@ if [[ -s "$EXPERIMENTS_DIR/cpu_utilization.csv" ]]; then
     --title "Server CPU Utilization"
 else
   echo "skip: missing $EXPERIMENTS_DIR/cpu_utilization.csv"
+  echo "  CPU rows are produced only by scripts/measure_cpu.py on the server node."
 fi
 
 echo

@@ -21,6 +21,15 @@ RESET=0
 DRY_RUN=0
 ONLY_NO_METADATA=0
 ONLY_METADATA=0
+CPU_SSH=""
+CPU_REMOTE_DIR="~/CS2640-Final-Project"
+CPU_CSV="experiments/cpu_utilization.csv"
+CPU_INTERVAL="0.20"
+SERVER_PID=""
+SERVER_PROCESS="kv_server_rdma"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/experiment_cpu.sh"
 
 usage() {
   cat <<'EOF'
@@ -43,6 +52,12 @@ Options:
   --build-dir DIR      Build directory. Default: build.
   --only-no-metadata   Run only pure RDMA READ benchmark.
   --only-metadata      Run only RDMA READ + FETCH_AND_ADD benchmark.
+  --cpu-ssh USER@HOST  SSH target for the server node; enables CPU sampling.
+  --cpu-remote-dir DIR Server-node project dir. Default: ~/CS2640-Final-Project.
+  --cpu-csv PATH       Server-node CPU CSV path. Default: experiments/cpu_utilization.csv.
+  --cpu-interval SEC   CPU sample interval. Default: 0.20.
+  --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server_rdma.
+  --server-process N   Process name for pgrep. Default: kv_server_rdma.
   --reset              Delete this script's CSVs before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -80,6 +95,12 @@ while [[ $# -gt 0 ]]; do
     --build-dir) BUILD_DIR="${2:-}"; shift 2 ;;
     --only-no-metadata) ONLY_NO_METADATA=1; shift ;;
     --only-metadata) ONLY_METADATA=1; shift ;;
+    --cpu-ssh) CPU_SSH="${2:-}"; shift 2 ;;
+    --cpu-remote-dir) CPU_REMOTE_DIR="${2:-}"; shift 2 ;;
+    --cpu-csv) CPU_CSV="${2:-}"; shift 2 ;;
+    --cpu-interval) CPU_INTERVAL="${2:-}"; shift 2 ;;
+    --server-pid) SERVER_PID="${2:-}"; shift 2 ;;
+    --server-process) SERVER_PROCESS="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -127,7 +148,7 @@ if [[ "$ONLY_METADATA" -eq 0 ]]; then
   for C in ${CLIENTS//,/ }; do
     echo
     echo "== One-sided RDMA no metadata: $C clients =="
-    run_cmd "$CLIENT" \
+    run_with_optional_cpu "One-Sided RDMA" "one_sided_rdma" "$C" 0 "$CLIENT" \
       --host "$HOST" --port "$PORT" \
       --mode one-sided --device "$DEVICE" \
       --benchmark --clients "$C" \
@@ -140,7 +161,7 @@ if [[ "$ONLY_NO_METADATA" -eq 0 ]]; then
   for C in ${CLIENTS//,/ }; do
     echo
     echo "== One-sided RDMA metadata: $C clients =="
-    run_cmd "$CLIENT" \
+    run_with_optional_cpu "One-Sided RDMA + Metadata" "one_sided_rdma_metadata" "$C" 1 "$CLIENT" \
       --host "$HOST" --port "$PORT" \
       --mode one-sided --device "$DEVICE" \
       --benchmark --clients "$C" \
@@ -149,6 +170,8 @@ if [[ "$ONLY_NO_METADATA" -eq 0 ]]; then
       --csv "$METADATA_CSV"
   done
 fi
+
+cpu_sync_csv "$OUTDIR"
 
 echo
 echo "One-sided RDMA experiments complete:"

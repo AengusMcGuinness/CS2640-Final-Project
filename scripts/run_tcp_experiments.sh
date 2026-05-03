@@ -20,6 +20,15 @@ BUILD_DIR="build"
 CSV_PATH=""
 RESET=0
 DRY_RUN=0
+CPU_SSH=""
+CPU_REMOTE_DIR="~/CS2640-Final-Project"
+CPU_CSV="experiments/cpu_utilization.csv"
+CPU_INTERVAL="0.20"
+SERVER_PID=""
+SERVER_PROCESS="kv_server"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/experiment_cpu.sh"
 
 usage() {
   cat <<'EOF'
@@ -42,6 +51,12 @@ Options:
   --outdir DIR         Output directory. Default: experiments.
   --csv PATH           CSV output path. Default: OUTDIR/tcp_cloudlab_clients.csv.
   --build-dir DIR      Build directory. Default: build.
+  --cpu-ssh USER@HOST  SSH target for the server node; enables CPU sampling.
+  --cpu-remote-dir DIR Server-node project dir. Default: ~/CS2640-Final-Project.
+  --cpu-csv PATH       Server-node CPU CSV path. Default: experiments/cpu_utilization.csv.
+  --cpu-interval SEC   CPU sample interval. Default: 0.20.
+  --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server.
+  --server-process N   Process name for pgrep. Default: kv_server.
   --reset              Delete this script's CSV before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -80,6 +95,12 @@ while [[ $# -gt 0 ]]; do
     --outdir) OUTDIR="${2:-}"; shift 2 ;;
     --csv) CSV_PATH="${2:-}"; shift 2 ;;
     --build-dir) BUILD_DIR="${2:-}"; shift 2 ;;
+    --cpu-ssh) CPU_SSH="${2:-}"; shift 2 ;;
+    --cpu-remote-dir) CPU_REMOTE_DIR="${2:-}"; shift 2 ;;
+    --cpu-csv) CPU_CSV="${2:-}"; shift 2 ;;
+    --cpu-interval) CPU_INTERVAL="${2:-}"; shift 2 ;;
+    --server-pid) SERVER_PID="${2:-}"; shift 2 ;;
+    --server-process) SERVER_PROCESS="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -114,13 +135,15 @@ echo "  host=$HOST port=$PORT clients=${CLIENTS//,/ } csv=$CSV_PATH"
 for C in ${CLIENTS//,/ }; do
   echo
   echo "== TCP: $C clients =="
-  run_cmd "$BENCHMARK" \
+  run_with_optional_cpu "TCP" "tcp" "$C" 0 "$BENCHMARK" \
     --host "$HOST" --port "$PORT" \
     --clients "$C" --ops "$OPS" --keys "$KEYS" \
     --value-size "$VALUE_SIZE" --get-ratio "$GET_RATIO" \
     --zipf-s "$ZIPF_S" --warmup "$WARMUP" \
     --csv "$CSV_PATH"
 done
+
+cpu_sync_csv "$OUTDIR"
 
 echo
 echo "TCP experiments complete: $CSV_PATH"

@@ -29,6 +29,15 @@ VALSIZE_CSV=""
 RESET=0
 DRY_RUN=0
 ONLY_CLIENTS=0
+CPU_SSH=""
+CPU_REMOTE_DIR="~/CS2640-Final-Project"
+CPU_CSV="experiments/cpu_utilization.csv"
+CPU_INTERVAL="0.20"
+SERVER_PID=""
+SERVER_PROCESS="kv_server_rdma"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/experiment_cpu.sh"
 
 usage() {
   cat <<'EOF'
@@ -58,6 +67,12 @@ Options:
   --outdir DIR         Output directory. Default: experiments.
   --build-dir DIR      Build directory. Default: build.
   --only-clients       Run only the client-count sweep.
+  --cpu-ssh USER@HOST  SSH target for the server node; enables CPU sampling.
+  --cpu-remote-dir DIR Server-node project dir. Default: ~/CS2640-Final-Project.
+  --cpu-csv PATH       Server-node CPU CSV path. Default: experiments/cpu_utilization.csv.
+  --cpu-interval SEC   CPU sample interval. Default: 0.20.
+  --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server_rdma.
+  --server-process N   Process name for pgrep. Default: kv_server_rdma.
   --reset              Delete this script's CSVs before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -101,6 +116,12 @@ while [[ $# -gt 0 ]]; do
     --outdir) OUTDIR="${2:-}"; shift 2 ;;
     --build-dir) BUILD_DIR="${2:-}"; shift 2 ;;
     --only-clients) ONLY_CLIENTS=1; shift ;;
+    --cpu-ssh) CPU_SSH="${2:-}"; shift 2 ;;
+    --cpu-remote-dir) CPU_REMOTE_DIR="${2:-}"; shift 2 ;;
+    --cpu-csv) CPU_CSV="${2:-}"; shift 2 ;;
+    --cpu-interval) CPU_INTERVAL="${2:-}"; shift 2 ;;
+    --server-pid) SERVER_PID="${2:-}"; shift 2 ;;
+    --server-process) SERVER_PROCESS="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -136,7 +157,7 @@ echo "  host=$HOST port=$PORT device=$DEVICE outdir=$OUTDIR"
 for C in ${CLIENTS//,/ }; do
   echo
   echo "== Two-sided RDMA clients: $C =="
-  run_cmd "$CLIENT" \
+  run_with_optional_cpu "Two-Sided RDMA" "two_sided_rdma" "$C" 0 "$CLIENT" \
     --host "$HOST" --port "$PORT" \
     --mode two-sided --device "$DEVICE" \
     --benchmark \
@@ -186,6 +207,8 @@ if [[ "$ONLY_CLIENTS" -eq 0 ]]; then
       --csv "$VALSIZE_CSV"
   done
 fi
+
+cpu_sync_csv "$OUTDIR"
 
 echo
 echo "Two-sided RDMA experiments complete:"
