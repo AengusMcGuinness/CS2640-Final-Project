@@ -23,7 +23,7 @@ ONLY_NO_METADATA=0
 ONLY_METADATA=0
 CPU_SSH=""
 CPU_REMOTE_DIR=""
-CPU_CSV="experiments/cpu_utilization.csv"
+CPU_CSV=""
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server_rdma"
@@ -145,6 +145,7 @@ mkdir -p "$OUTDIR"
 NO_METADATA_CSV="${NO_METADATA_CSV:-$OUTDIR/rdma_one_sided_clients.csv}"
 METADATA_CSV="${METADATA_CSV:-$OUTDIR/rdma_one_sided_metadata.csv}"
 NET_CSV="${NET_CSV:-$OUTDIR/network_utilization.csv}"
+CPU_CSV="${CPU_CSV:-$OUTDIR/cpu_utilization.csv}"
 
 if [[ "$RESET" -eq 1 ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then

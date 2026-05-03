@@ -31,7 +31,7 @@ DRY_RUN=0
 ONLY_CLIENTS=0
 CPU_SSH=""
 CPU_REMOTE_DIR=""
-CPU_CSV="experiments/cpu_utilization.csv"
+CPU_CSV=""
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server_rdma"
@@ -165,6 +165,7 @@ RATIO_CSV="${RATIO_CSV:-$OUTDIR/rdma_two_sided_ratio.csv}"
 ZIPF_CSV="${ZIPF_CSV:-$OUTDIR/rdma_two_sided_zipf.csv}"
 VALSIZE_CSV="${VALSIZE_CSV:-$OUTDIR/rdma_two_sided_valsize.csv}"
 NET_CSV="${NET_CSV:-$OUTDIR/network_utilization.csv}"
+CPU_CSV="${CPU_CSV:-$OUTDIR/cpu_utilization.csv}"
 
 if [[ "$RESET" -eq 1 ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then

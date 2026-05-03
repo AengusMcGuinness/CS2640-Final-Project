@@ -22,7 +22,7 @@ RESET=0
 DRY_RUN=0
 CPU_SSH=""
 CPU_REMOTE_DIR=""
-CPU_CSV="experiments/cpu_utilization.csv"
+CPU_CSV=""
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server"
@@ -144,6 +144,9 @@ if [[ -z "$CSV_PATH" ]]; then
 fi
 if [[ -z "$NET_CSV" ]]; then
   NET_CSV="$OUTDIR/network_utilization.csv"
+fi
+if [[ -z "$CPU_CSV" ]]; then
+  CPU_CSV="$OUTDIR/cpu_utilization.csv"
 fi
 
 if [[ "$RESET" -eq 1 ]]; then
