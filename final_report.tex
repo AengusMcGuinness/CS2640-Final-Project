@@ -37,13 +37,14 @@ when read operations also perform lightweight metadata updates.  I built
 baseline, a two-sided RDMA send/receive path, and a one-sided RDMA read path
 over a remotely readable hash table.  The one-sided path can optionally issue
 an RDMA \texttt{FETCH\_AND\_ADD} after each read to approximate LRU-style
-recency metadata maintenance.  On CloudLab RDMA nodes, two-sided RDMA improves
-throughput by 2.2--5.7$\times$ over TCP and reduces p99 latency from
-135--190~$\mu$s to 5--16~$\mu$s.  One-sided reads reach 96--217k operations/s
-with stable 16~$\mu$s p99 latency.  Metadata atomics increase one-sided mean
-latency by 3.1--4.8~$\mu$s and p99 latency by 3--5~$\mu$s.  These results
-show that one-sided RDMA can remove most server-side cache read overhead, but
-metadata maintenance remains a visible part of the critical path.
+recency metadata maintenance.  In a final three-trial CloudLab experiment,
+two-sided RDMA improves throughput by 5.5--13.2$\times$ over TCP and reduces
+p99 latency from 132--164~$\mu$s to 6--8~$\mu$s.  One-sided reads reach
+160k--974k operations/s with stable 12~$\mu$s p99 latency.  Metadata atomics
+increase one-sided mean latency by about 3.0--3.2~$\mu$s and p99 latency by
+3--4~$\mu$s.  These results show that one-sided RDMA can remove most
+server-side cache read overhead, but metadata maintenance remains a visible
+part of the critical path.
 \end{abstract}
 
 %-------------------------------------------------------------------------------
@@ -72,8 +73,8 @@ The original proposal defined three goals.  The 75\% goal was to implement a
 basic key-value store and compare TCP/RPC to two-sided RDMA messaging.  The
 100\% goal was to add one-sided RDMA reads.  The 125\% goal was to simulate
 cache metadata updates and measure their impact on one-sided RDMA.  \sys{}
-implements all three configurations and collects throughput, latency, and
-server CPU measurements on CloudLab.
+implements all three configurations and collects throughput, latency, server
+CPU, and attempted network-counter measurements on CloudLab.
 
 This report makes three contributions:
 \begin{itemize}[leftmargin=*,noitemsep]
@@ -235,36 +236,46 @@ RDMA, and one-sided RDMA sweeps on CloudLab and regenerate plots locally.
 
 Experiments were run on a two-node CloudLab setup with RDMA-capable Mellanox
 hardware.  The server and client communicated over the private 10.10.x.x
-experiment network.  RDMA runs used device \texttt{mlx5\_0}.  The code was
-built with CMake and \texttt{libibverbs}; RDMA targets are compiled only when
-the verbs library is available.
+experiment network.  A device-mapping check showed that the private experiment
+interface was \texttt{ens1f1np1}, backed by RDMA device \texttt{mlx5\_3}; the
+public/control interface was \texttt{eno49np0}, backed by \texttt{mlx5\_0}.
+All final RDMA measurements therefore used \texttt{--device mlx5\_3} and
+sampled \texttt{ens1f1np1} for host network counters.  The code was built with
+CMake and \texttt{libibverbs}; RDMA targets are compiled only when the verbs
+library is available.
 
 \subsection{Workloads}
 
-The primary client-count sweep used 1, 2, 4, and 8 clients with 10,000 measured
-operations, 1,000 warmup operations, and 1024 prefilled keys.  TCP and
-two-sided RDMA used 64-byte values, a 95\% GET ratio, and Zipf skew
-$s=0.8$.  The one-sided read benchmark measured the proposal's direct-read
-path: GET-only lookups over the preloaded RDMA slot array.  This means the
-three-way comparison should be read as a cache-read comparison, not as a claim
-that one-sided RDMA currently replaces a full mixed GET/SET workload.
+The final client-count sweep used 1, 2, 4, and 8 clients with 100,000 measured
+operations per point, 5,000 warmup operations, and 1024 prefilled keys.  Each
+point was repeated three times.  TCP and two-sided RDMA used 64-byte values, a
+95\% GET ratio, and Zipf skew $s=0.8$.  The one-sided read benchmark measured
+the proposal's direct-read path: GET-only lookups over the preloaded RDMA slot
+array.  This means the three-way comparison should be read as a cache-read
+comparison, not as a claim that one-sided RDMA currently replaces a full mixed
+GET/SET workload.
 
-Additional two-sided RDMA sweeps varied GET ratio, Zipf skew, and value size.
 The metadata experiment compared one-sided reads with and without one
-\texttt{FETCH\_AND\_ADD} per operation.
+\texttt{FETCH\_AND\_ADD} per operation.  All final runs completed with zero
+warmup errors and zero measured errors.
 
 \subsection{Metrics}
 
 Throughput is measured as completed operations divided by timed elapsed time.
 Latency is measured on the client side and reported as mean, median, p95, and
-p99.  Server process CPU was sampled externally so the benchmark hot paths did
-not include instrumentation.  Because several RDMA runs complete in less than
-200 ms, the CPU measurements are useful directionally but have limited
-statistical precision.  I also attempted server NIC byte-counter measurements,
-but the Linux netdev counters reported near-zero bytes per RDMA operation.
+p99.  Plots show the mean across three trials with error bars representing
+sample standard deviation.  Server process CPU was sampled externally so the
+benchmark hot paths did not include instrumentation.  Even at 100,000
+operations per point, the fastest one-sided runs are short enough that CPU
+sampling is still more useful qualitatively than as a precise utilization
+measurement.
+
+I also attempted server NIC byte-counter measurements after correcting the
+RDMA device mapping to \texttt{mlx5\_3}/\texttt{ens1f1np1}.  TCP counter
+values were plausible, but RDMA still reported near-zero bytes per operation.
 Those values are not physically plausible for the RDMA data path, so this
-report treats network-byte results as inconclusive rather than presenting them
-as a valid metric.
+report treats Linux netdev byte counters as inconclusive and does not use the
+network-byte plot as evidence.
 
 %-------------------------------------------------------------------------------
 \section{Results}
@@ -273,57 +284,59 @@ as a valid metric.
 \subsection{Transport Comparison}
 
 Figure~\ref{fig:transport-comparison} shows the main comparison across TCP,
-two-sided RDMA, and one-sided RDMA.  TCP scales from 9.0k operations/s at one
-client to 57.4k operations/s at eight clients.  Two-sided RDMA reaches 19.6k
-operations/s at one client and 193.2k operations/s at eight clients, a
-2.2--5.7$\times$ improvement over TCP depending on concurrency.  One-sided
-RDMA reads reach 96.3k operations/s at one client and 216.7k operations/s at
+two-sided RDMA, and one-sided RDMA.  TCP scales from 8.9k operations/s at one
+client to 72.9k operations/s at eight clients.  Two-sided RDMA reaches 117k
+operations/s at one client and 404k operations/s at eight clients, a
+5.5--13.2$\times$ improvement over TCP depending on concurrency.  One-sided
+RDMA reads reach 161k operations/s at one client and 974k operations/s at
 eight clients.
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=0.49\textwidth]{plots/comparison/throughput_vs_clients.png}
+\includegraphics[width=0.49\textwidth]{plots/final_summary_mlx5_3_100k/comparison/throughput_vs_clients_errorbars.png}
 \hfill
-\includegraphics[width=0.49\textwidth]{plots/comparison/p99_latency_vs_clients.png}
-\caption{Transport comparison on CloudLab.  Two-sided RDMA substantially
-improves throughput over TCP while keeping server-side request processing.
-One-sided RDMA directly reads registered memory and provides the lowest read
-latency, but this sweep is GET-only and should be interpreted as the direct
-cache-read path.}
+\includegraphics[width=0.49\textwidth]{plots/final_summary_mlx5_3_100k/comparison/p99_latency_vs_clients_errorbars.png}
+\caption{Transport comparison on CloudLab.  Points are means across three
+trials and error bars show sample standard deviation.  Two-sided RDMA
+substantially improves throughput over TCP while keeping server-side request
+processing.  One-sided RDMA directly reads registered memory and provides the
+lowest read latency, but this sweep is GET-only and should be interpreted as
+the direct cache-read path.}
 \label{fig:transport-comparison}
 \end{figure*}
 
-The p99 latency results are more dramatic.  TCP p99 latency is 135--190
-$\mu$s across the sweep.  Two-sided RDMA reduces p99 latency to 5--16
-$\mu$s.  One-sided RDMA reports a stable 16~$\mu$s p99 latency at every
+The p99 latency results are more dramatic.  TCP p99 latency is 132--164
+$\mu$s across the sweep.  Two-sided RDMA reduces p99 latency to 6--8
+$\mu$s.  One-sided RDMA reports a stable 12~$\mu$s p99 latency at every
 client count.  These results support the first two proposal goals: RDMA
 messaging improves significantly on TCP, and one-sided reads remove most of
 the remaining server-side request overhead.
 
 \begin{table*}[t]
 \centering
-\caption{Primary client-count results.  Throughput is in thousands of
-operations per second.  All runs reported zero measured errors.}
+\caption{Primary client-count results, averaged across three trials.
+Throughput is in thousands of operations per second.  All runs reported zero
+measured errors.}
 \label{tab:primary-results}
 \begin{tabular}{llrrrr}
 \toprule
 Mode & Workload & Clients & Throughput & Mean latency & p99 latency \\
      &          &         & (kops/s)   & ($\mu$s)     & ($\mu$s) \\
 \midrule
-\multirow{4}{*}{TCP} & 95\% GET, Zipf 0.8 & 1 & 9.0  & 100.5 & 135 \\
-                     &                     & 2 & 16.8 & 106.3 & 136 \\
-                     &                     & 4 & 29.3 & 111.7 & 190 \\
-                     &                     & 8 & 57.4 & 112.1 & 177 \\
+\multirow{4}{*}{TCP} & 95\% GET, Zipf 0.8 & 1 & 8.9  & 106.4 & 153 \\
+                     &                     & 2 & 18.5 & 100.3 & 132 \\
+                     &                     & 4 & 31.7 & 110.9 & 164 \\
+                     &                     & 8 & 72.9 & 95.3  & 157 \\
 \midrule
-\multirow{4}{*}{Two-sided RDMA} & 95\% GET, Zipf 0.8 & 1 & 19.6  & 6.6  & 5 \\
-                                &                     & 2 & 96.5  & 12.4 & 8 \\
-                                &                     & 4 & 154.7 & 10.8 & 8 \\
-                                &                     & 8 & 193.2 & 11.1 & 16 \\
+\multirow{4}{*}{Two-sided RDMA} & 95\% GET, Zipf 0.8 & 1 & 117.3 & 6.2  & 6 \\
+                                &                     & 2 & 115.1 & 11.2 & 6 \\
+                                &                     & 4 & 233.9 & 13.7 & 7 \\
+                                &                     & 8 & 403.8 & 15.2 & 8 \\
 \midrule
-\multirow{4}{*}{One-sided RDMA} & GET-only reads & 1 & 96.3  & 6.0 & 16 \\
-                                &                & 2 & 149.4 & 6.1 & 16 \\
-                                &                & 4 & 205.8 & 6.1 & 16 \\
-                                &                & 8 & 216.7 & 6.1 & 16 \\
+\multirow{4}{*}{One-sided RDMA} & GET-only reads & 1 & 160.5 & 4.8 & 12 \\
+                                &                & 2 & 285.9 & 4.8 & 12 \\
+                                &                & 4 & 607.6 & 4.8 & 12 \\
+                                &                & 8 & 974.3 & 4.8 & 12 \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -332,26 +345,28 @@ Mode & Workload & Clients & Throughput & Mean latency & p99 latency \\
 
 Figure~\ref{fig:metadata-overhead} isolates the cost of cache metadata
 updates.  Adding one RDMA atomic operation after each one-sided read increases
-mean latency from roughly 6~$\mu$s to 9--11~$\mu$s.  p99 latency rises from
-16~$\mu$s to 19--21~$\mu$s.  The added p99 cost is therefore 3--5~$\mu$s.
+mean latency from roughly 4.8~$\mu$s to 7.8--8.0~$\mu$s.  p99 latency rises
+from 12~$\mu$s to 15--16~$\mu$s.  The added p99 cost is therefore
+3--4~$\mu$s.
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=0.49\textwidth]{plots/metadata_overhead/mean_latency_vs_clients.png}
+\includegraphics[width=0.49\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/mean_latency_vs_clients_errorbars.png}
 \hfill
-\includegraphics[width=0.49\textwidth]{plots/metadata_overhead/p99_latency_vs_clients.png}
+\includegraphics[width=0.49\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/p99_latency_vs_clients_errorbars.png}
 \caption{One-sided RDMA metadata overhead.  The metadata variant performs an
-RDMA \texttt{FETCH\_AND\_ADD} after every RDMA read.  The atomic operation
-adds a consistent latency penalty, which is the central cost predicted by the
-proposal.}
+RDMA \texttt{FETCH\_AND\_ADD} after every RDMA read.  Points are means across
+three trials and error bars show sample standard deviation.  The atomic
+operation adds a consistent latency penalty, which is the central cost
+predicted by the proposal.}
 \label{fig:metadata-overhead}
 \end{figure*}
 
-Throughput does not show a clean penalty at higher client counts: the metadata
-variant is lower at one client but similar or slightly higher at 2--8 clients.
-I therefore use latency, not throughput, as the stronger evidence for metadata
-cost.  The short run duration and client-side parallelism make throughput more
-sensitive to noise in this particular sweep.
+The throughput results also show a metadata cost in the final trials.  The
+metadata variant is 27--36\% lower throughput than pure one-sided reads across
+the client-count sweep.  This is less fundamental than the latency result,
+because throughput is sensitive to client-side scheduling, but it reinforces
+the same conclusion: metadata atomics are visible in the one-sided read path.
 
 \begin{table}[t]
 \centering
@@ -362,10 +377,10 @@ sensitive to noise in this particular sweep.
 Clients & Mean increase & p99 increase & Metadata p99 \\
         & ($\mu$s)      & ($\mu$s)     & ($\mu$s) \\
 \midrule
-1 & 3.1 & 3 & 19 \\
-2 & 3.2 & 3 & 19 \\
-4 & 3.7 & 4 & 20 \\
-8 & 4.8 & 5 & 21 \\
+1 & 3.0 & 3.0 & 15.0 \\
+2 & 3.1 & 3.7 & 15.7 \\
+4 & 3.1 & 4.0 & 16.0 \\
+8 & 3.2 & 4.0 & 16.0 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -373,45 +388,34 @@ Clients & Mean increase & p99 increase & Metadata p99 \\
 \subsection{Server CPU Utilization}
 
 Figure~\ref{fig:cpu} shows sampled server-process CPU utilization.  TCP server
-CPU rises with client count, reaching 47.7\% average process CPU at eight
+CPU rises with client count, reaching 60.7\% average process CPU at eight
 clients.  Two-sided RDMA consumes more sampled server CPU because the server
-busy-polls completions and handles every request.  The one-sided server stays
-near idle for most samples because the server is not on the read data path
-after setup.  The measurement has an important caveat: many RDMA benchmark
-runs are short enough to produce only one CPU sample.  The qualitative
-direction is meaningful, but the exact percentages should not be overfit.
+busy-polls completions and handles every request, reaching 479\% average
+process CPU at eight clients.  The one-sided server stays near idle for most
+samples because the server is not on the read data path after setup.  The
+measurement has an important caveat: many RDMA benchmark runs are short enough
+to produce only one or a few CPU samples.  The qualitative direction is
+meaningful, but the exact percentages should not be overfit.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=\linewidth]{plots/cpu/avg_server_cpu_vs_clients.png}
+\includegraphics[width=\linewidth]{plots/final_summary_mlx5_3_100k/cpu/avg_server_cpu_vs_clients_errorbars.png}
 \caption{Sampled average server-process CPU.  The one-sided server is mostly
 idle during the read data path, while TCP and two-sided RDMA require server
 CPU work for each request.  Short RDMA runs make this metric noisy.}
 \label{fig:cpu}
 \end{figure}
 
-\subsection{Workload Characterization}
+\subsection{Network Counter Attempt}
 
-The additional two-sided RDMA sweeps provide context for the transport
-comparison.  Varying the GET ratio, Zipf skew, and value size produced zero
-measured errors in every run.  The value-size sweep shows that 512-byte values
-reduce throughput compared with 32--128-byte values, suggesting that larger
-payloads begin to stress copy and bandwidth costs even in the RDMA messaging
-path.  The Zipf and GET-ratio sweeps are less monotonic, which indicates that
-at this experiment scale the implementation is often latency and scheduling
-bound rather than purely workload-distribution bound.
-
-\begin{figure*}[t]
-\centering
-\includegraphics[width=0.32\textwidth]{plots/rdma_two_sided_ratio/throughput_vs_get_ratio.png}
-\hfill
-\includegraphics[width=0.32\textwidth]{plots/rdma_two_sided_zipf/throughput_vs_zipf_s.png}
-\hfill
-\includegraphics[width=0.32\textwidth]{plots/rdma_two_sided_valsize/throughput_vs_value_size.png}
-\caption{Additional two-sided RDMA characterization sweeps.  These runs vary
-GET ratio, Zipf skew, and value size while holding concurrency at four clients.}
-\label{fig:characterization}
-\end{figure*}
+The final automation also recorded server network byte counters on
+\texttt{ens1f1np1}.  These measurements are useful mostly as a validation
+lesson.  TCP reported a plausible 233 total bytes per operation across all
+client counts.  The RDMA modes, however, reported only 0.02--0.08 total bytes
+per operation, which is impossible for operations that exchange RDMA messages
+or read 1024-byte slots.  I therefore exclude the generated network plot from
+the main evidence and treat Linux netdev counters as the wrong instrument for
+this RDMA/RoCE traffic on this setup.
 
 %-------------------------------------------------------------------------------
 \section{Discussion}
@@ -448,18 +452,21 @@ because a production-quality write protocol would need versioning,
 compare-and-swap, or a server-mediated slow path to prevent readers from
 observing partially updated slots.
 
-The second limitation is measurement duration.  The RDMA runs complete very
-quickly, which reduces the reliability of sampled CPU utilization and may
-contribute to noisy throughput comparisons in the metadata experiment.  A
-stronger follow-up experiment would run 100k or 1M operations per data point
-and repeat each point several times with confidence intervals.
+The second limitation is measurement duration.  The final runs use 100,000
+operations per point and three trials, which is enough to stabilize the main
+latency and throughput trends.  However, the fastest one-sided points still
+complete in a fraction of a second, which reduces the reliability of sampled
+CPU utilization.  A stronger follow-up experiment would use longer 1M+
+operation points for CPU and counter measurements.
 
 Finally, network byte-counter measurements were attempted but are not used as
-evidence.  The server's Linux netdev counters produced plausible TCP bytes per
-operation but near-zero RDMA bytes per operation.  This likely means the
-counter path was not observing the RoCE/RDMA data path.  Accurate network
-overhead analysis would need NIC hardware counters, \texttt{ethtool -S},
-\texttt{perfquery}, or Mellanox-specific RDMA port counters.
+evidence.  Even after mapping the private experiment network to
+\texttt{mlx5\_3}/\texttt{ens1f1np1}, the server's Linux netdev counters
+produced plausible TCP bytes per operation but near-zero RDMA bytes per
+operation.  This likely means the counter path was not observing the
+RoCE/RDMA data path.  Accurate network overhead analysis would need NIC
+hardware counters, \texttt{ethtool -S}, \texttt{perfquery}, or
+Mellanox-specific RDMA port counters.
 
 %-------------------------------------------------------------------------------
 \section{Related Work}
@@ -491,7 +498,7 @@ scope.  The prototype implements a TCP baseline, a two-sided RDMA server, and
 a one-sided RDMA read path over a registered hash table.  On CloudLab, RDMA
 substantially improves throughput and tail latency relative to TCP.  One-sided
 reads achieve low and stable latency without server CPU involvement, while an
-RDMA atomic metadata update adds a measurable 3--5~$\mu$s p99 latency cost.
+RDMA atomic metadata update adds a measurable 3--4~$\mu$s p99 latency cost.
 
 The final answer to the research question is therefore nuanced.  One-sided
 RDMA can significantly reduce distributed cache read overhead, but cache
@@ -505,8 +512,10 @@ batched, approximated, or moved off path.
 %-------------------------------------------------------------------------------
 
 The artifact contains the C++ implementation, CloudLab runner scripts, raw CSV
-files, and generated plots.  The primary report inputs are the CSV files under
-\texttt{experiments/} and the figures under \texttt{plots/}.
+files, and generated plots.  The primary final inputs are the raw trials under
+\texttt{experiments/final\_trials\_mlx5\_3\_100k/}, the aggregated CSVs under
+\texttt{experiments/final\_summary\_mlx5\_3\_100k/}, and the figures under
+\texttt{plots/final\_summary\_mlx5\_3\_100k/}.
 
 %-------------------------------------------------------------------------------
 \begin{thebibliography}{9}
