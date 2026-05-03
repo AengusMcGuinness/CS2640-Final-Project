@@ -27,6 +27,10 @@ CPU_CSV="experiments/cpu_utilization.csv"
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server_rdma"
+NET_SSH=""
+NETDEV=""
+NET_SERVER_IP=""
+NET_CSV=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -60,6 +64,11 @@ Options:
   --cpu-interval SEC   CPU sample interval. Default: 0.20.
   --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server_rdma.
   --server-process N   Process name for pgrep. Default: kv_server_rdma.
+  --net-ssh USER@HOST  SSH target for the server node; enables NIC bytes/op.
+  --netdev DEV         Server NIC to sample. Default: auto-detect from --host.
+  --net-server-ip IP   Server IP used for NIC auto-detection. Default: --host.
+  --net-csv PATH       Local NIC CSV path. Default: OUTDIR/network_utilization.csv.
+  --metrics-ssh TARGET Convenience: sets both --cpu-ssh and --net-ssh.
   --reset              Delete this script's CSVs before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -103,6 +112,11 @@ while [[ $# -gt 0 ]]; do
     --cpu-interval) CPU_INTERVAL="${2:-}"; shift 2 ;;
     --server-pid) SERVER_PID="${2:-}"; shift 2 ;;
     --server-process) SERVER_PROCESS="${2:-}"; shift 2 ;;
+    --net-ssh) NET_SSH="${2:-}"; shift 2 ;;
+    --netdev) NETDEV="${2:-}"; shift 2 ;;
+    --net-server-ip) NET_SERVER_IP="${2:-}"; shift 2 ;;
+    --net-csv) NET_CSV="${2:-}"; shift 2 ;;
+    --metrics-ssh) CPU_SSH="${2:-}"; NET_SSH="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -124,6 +138,7 @@ fi
 mkdir -p "$OUTDIR"
 NO_METADATA_CSV="${NO_METADATA_CSV:-$OUTDIR/rdma_one_sided_clients.csv}"
 METADATA_CSV="${METADATA_CSV:-$OUTDIR/rdma_one_sided_metadata.csv}"
+NET_CSV="${NET_CSV:-$OUTDIR/network_utilization.csv}"
 
 if [[ "$RESET" -eq 1 ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -150,7 +165,7 @@ if [[ "$ONLY_METADATA" -eq 0 ]]; then
   for C in ${CLIENTS//,/ }; do
     echo
     echo "== One-sided RDMA no metadata: $C clients =="
-    run_with_optional_cpu "One-Sided RDMA" "one_sided_rdma" "$C" 0 "$CLIENT" \
+    run_with_optional_metrics "One-Sided RDMA" "one_sided_rdma" "$C" 0 "$OPS" "$CLIENT" \
       --host "$HOST" --port "$PORT" \
       --mode one-sided --device "$DEVICE" \
       --benchmark --clients "$C" \
@@ -163,7 +178,7 @@ if [[ "$ONLY_NO_METADATA" -eq 0 ]]; then
   for C in ${CLIENTS//,/ }; do
     echo
     echo "== One-sided RDMA metadata: $C clients =="
-    run_with_optional_cpu "One-Sided RDMA + Metadata" "one_sided_rdma_metadata" "$C" 1 "$CLIENT" \
+    run_with_optional_metrics "One-Sided RDMA + Metadata" "one_sided_rdma_metadata" "$C" 1 "$OPS" "$CLIENT" \
       --host "$HOST" --port "$PORT" \
       --mode one-sided --device "$DEVICE" \
       --benchmark --clients "$C" \

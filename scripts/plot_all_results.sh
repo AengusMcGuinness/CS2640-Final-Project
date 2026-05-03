@@ -118,5 +118,16 @@ else
   echo "  CPU rows are produced only by scripts/measure_cpu.py on the server node."
 fi
 
+if [[ -s "$EXPERIMENTS_DIR/network_utilization.csv" ]]; then
+  "$PYTHON" scripts/plot_network.py \
+    --csv "$EXPERIMENTS_DIR/network_utilization.csv" \
+    --outdir "$PLOTS_DIR/network" \
+    --x clients \
+    --title "Server NIC Bytes Per Operation"
+else
+  echo "skip: missing $EXPERIMENTS_DIR/network_utilization.csv"
+  echo "  Network rows are produced by runner scripts when --net-ssh or --metrics-ssh is used."
+fi
+
 echo
 echo "All available plots regenerated under $PLOTS_DIR/"

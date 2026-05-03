@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Shared optional CPU sampling helpers for experiment runner scripts.
+# Shared optional CPU and NIC sampling helpers for experiment runner scripts.
 #
 # Runner scripts source this file and provide:
 #   CPU_SSH, CPU_REMOTE_DIR, CPU_CSV, CPU_INTERVAL, SERVER_PID,
-#   SERVER_PROCESS, DRY_RUN, OUTDIR
+#   SERVER_PROCESS, NET_SSH, NETDEV, NET_SERVER_IP, NET_CSV, DRY_RUN, OUTDIR
 
 cpu_enabled() {
   [[ -n "${CPU_SSH:-}" ]]
+}
+
+net_enabled() {
+  [[ -n "${NET_SSH:-}" ]]
 }
 
 cpu_resolve_server_pid() {
@@ -93,16 +97,106 @@ cpu_stop_sampler() {
   ssh "$CPU_SSH" "kill -INT $sampler_pid_q 2>/dev/null || true; i=0; while kill -0 $sampler_pid_q 2>/dev/null && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i + 1)); done; kill -TERM $sampler_pid_q 2>/dev/null || true"
 }
 
-run_with_optional_cpu() {
+net_resolve_dev() {
+  if [[ -n "${NETDEV:-}" ]]; then
+    printf '%s\n' "$NETDEV"
+    return 0
+  fi
+
+  local server_ip="${NET_SERVER_IP:-${HOST:-}}"
+  [[ -n "$server_ip" ]] || {
+    echo "network sampling needs --netdev or --net-server-ip" >&2
+    return 2
+  }
+
+  local server_ip_q
+  server_ip_q="$(printf '%q' "$server_ip")"
+  ssh "$NET_SSH" "ip -o -4 addr show | awk -v ip=$server_ip_q '{ split(\$4, a, \"/\"); if (a[1] == ip) { print \$2; exit } }'"
+}
+
+net_read_counters() {
+  local netdev="$1"
+  local netdev_q
+  netdev_q="$(printf '%q' "$netdev")"
+  ssh "$NET_SSH" "cat /sys/class/net/$netdev_q/statistics/rx_bytes; cat /sys/class/net/$netdev_q/statistics/tx_bytes"
+}
+
+net_append_row() {
   local label="$1"
   local transport="$2"
   local clients="$3"
   local metadata="$4"
-  shift 4
+  local operations="$5"
+  local netdev="$6"
+  local before="$7"
+  local after="$8"
+
+  local rx_before tx_before rx_after tx_after
+  rx_before="$(printf '%s\n' "$before" | sed -n '1p')"
+  tx_before="$(printf '%s\n' "$before" | sed -n '2p')"
+  rx_after="$(printf '%s\n' "$after" | sed -n '1p')"
+  tx_after="$(printf '%s\n' "$after" | sed -n '2p')"
+
+  [[ "$rx_before" =~ ^[0-9]+$ && "$tx_before" =~ ^[0-9]+$ &&
+     "$rx_after" =~ ^[0-9]+$ && "$tx_after" =~ ^[0-9]+$ ]] || {
+    echo "warning: invalid NIC counter output for $netdev" >&2
+    return 0
+  }
+
+  local rx_delta=$((rx_after - rx_before))
+  local tx_delta=$((tx_after - tx_before))
+  local total_delta=$((rx_delta + tx_delta))
+
+  if (( rx_delta < 0 || tx_delta < 0 )); then
+    echo "warning: NIC counters decreased; skipping network row for $label clients=$clients" >&2
+    return 0
+  fi
+
+  local rx_per_op tx_per_op total_per_op
+  rx_per_op="$(awk -v bytes="$rx_delta" -v ops="$operations" 'BEGIN { if (ops > 0) printf "%.3f", bytes / ops; else printf "0.000" }')"
+  tx_per_op="$(awk -v bytes="$tx_delta" -v ops="$operations" 'BEGIN { if (ops > 0) printf "%.3f", bytes / ops; else printf "0.000" }')"
+  total_per_op="$(awk -v bytes="$total_delta" -v ops="$operations" 'BEGIN { if (ops > 0) printf "%.3f", bytes / ops; else printf "0.000" }')"
+
+  mkdir -p "$(dirname "$NET_CSV")"
+  if [[ ! -s "$NET_CSV" ]]; then
+    printf '%s\n' "label,transport,clients,metadata,operations,netdev,rx_bytes_before,tx_bytes_before,rx_bytes_after,tx_bytes_after,rx_bytes_delta,tx_bytes_delta,total_bytes_delta,rx_bytes_per_operation,tx_bytes_per_operation,total_bytes_per_operation" > "$NET_CSV"
+  fi
+
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    "$label" "$transport" "$clients" "$metadata" "$operations" "$netdev" \
+    "$rx_before" "$tx_before" "$rx_after" "$tx_after" \
+    "$rx_delta" "$tx_delta" "$total_delta" \
+    "$rx_per_op" "$tx_per_op" "$total_per_op" >> "$NET_CSV"
+
+  echo "Network bytes/op: label=$label clients=$clients netdev=$netdev total=$total_per_op rx=$rx_per_op tx=$tx_per_op"
+}
+
+run_with_optional_metrics() {
+  local label="$1"
+  local transport="$2"
+  local clients="$3"
+  local metadata="$4"
+  local operations="$5"
+  shift 5
 
   local sampler_pid=""
   if cpu_enabled; then
     sampler_pid="$(cpu_start_sampler "$label" "$transport" "$clients" "$metadata")"
+  fi
+
+  local netdev=""
+  local net_before=""
+  if net_enabled; then
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      echo "dry-run: would sample server NIC counters for label=$label clients=$clients operations=$operations" >&2
+    else
+      netdev="$(net_resolve_dev)"
+      if [[ -z "$netdev" ]]; then
+        echo "failed to resolve server netdev; pass --netdev explicitly" >&2
+        return 2
+      fi
+      net_before="$(net_read_counters "$netdev")"
+    fi
   fi
 
   set +e
@@ -110,11 +204,26 @@ run_with_optional_cpu() {
   local rc=$?
   set -e
 
+  if net_enabled && [[ "${DRY_RUN:-0}" -eq 0 ]]; then
+    local net_after
+    net_after="$(net_read_counters "$netdev")"
+    net_append_row "$label" "$transport" "$clients" "$metadata" "$operations" "$netdev" "$net_before" "$net_after"
+  fi
+
   if cpu_enabled; then
     cpu_stop_sampler "$sampler_pid"
   fi
 
   return "$rc"
+}
+
+run_with_optional_cpu() {
+  local label="$1"
+  local transport="$2"
+  local clients="$3"
+  local metadata="$4"
+  shift 4
+  run_with_optional_metrics "$label" "$transport" "$clients" "$metadata" 0 "$@"
 }
 
 cpu_sync_csv() {

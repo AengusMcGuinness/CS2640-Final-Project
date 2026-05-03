@@ -84,6 +84,13 @@ The CSV file contains one row per run with the workload settings and measured la
 
 After building on both CloudLab nodes, start the matching server on the server node, then run one client-side script from the client node.
 
+Set the benchmark data-plane IP and the server's SSH target on the client node:
+
+```bash
+export SERVER_IP=10.10.x.x
+export SERVER_SSH=AMcG@hp080.utah.cloudlab.us
+```
+
 TCP:
 
 ```bash
@@ -91,7 +98,7 @@ TCP:
 ./build/kv_server 9090
 
 # Client node:
-./scripts/run_tcp_experiments.sh --host "$SERVER_IP" --reset
+./scripts/run_tcp_experiments.sh --host "$SERVER_IP" --metrics-ssh "$SERVER_SSH" --reset
 ```
 
 Two-sided RDMA:
@@ -101,7 +108,7 @@ Two-sided RDMA:
 ./build/kv_server_rdma --mode two-sided --device mlx5_0 --port 9091
 
 # Client node:
-./scripts/run_two_sided_rdma_experiments.sh --host "$SERVER_IP" --reset
+./scripts/run_two_sided_rdma_experiments.sh --host "$SERVER_IP" --metrics-ssh "$SERVER_SSH" --reset
 ```
 
 One-sided RDMA:
@@ -111,10 +118,25 @@ One-sided RDMA:
 ./build/kv_server_rdma --mode one-sided --device mlx5_0 --port 9091 --preload 1024
 
 # Client node:
-./scripts/run_one_sided_rdma_experiments.sh --host "$SERVER_IP" --reset
+./scripts/run_one_sided_rdma_experiments.sh --host "$SERVER_IP" --metrics-ssh "$SERVER_SSH" --reset
 ```
 
 Each script accepts `--help`, `--dry-run`, `--clients "1 2 4 8"`, `--outdir experiments`, and the usual benchmark knobs. The two-sided script runs the client-count, get-ratio, Zipf, and value-size sweeps; the one-sided script runs both no-metadata and metadata sweeps.
+
+`--metrics-ssh` enables both server CPU sampling and server NIC byte counters. It writes:
+
+- `experiments/cpu_utilization.csv`
+- `experiments/network_utilization.csv`
+
+If NIC auto-detection fails, pass the server interface explicitly:
+
+```bash
+./scripts/run_one_sided_rdma_experiments.sh \
+  --host "$SERVER_IP" \
+  --metrics-ssh "$SERVER_SSH" \
+  --netdev eno1 \
+  --reset
+```
 
 After downloading fresh CSVs, regenerate every available plot with:
 

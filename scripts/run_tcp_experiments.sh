@@ -26,6 +26,10 @@ CPU_CSV="experiments/cpu_utilization.csv"
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server"
+NET_SSH=""
+NETDEV=""
+NET_SERVER_IP=""
+NET_CSV=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -59,6 +63,11 @@ Options:
   --cpu-interval SEC   CPU sample interval. Default: 0.20.
   --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server.
   --server-process N   Process name for pgrep. Default: kv_server.
+  --net-ssh USER@HOST  SSH target for the server node; enables NIC bytes/op.
+  --netdev DEV         Server NIC to sample. Default: auto-detect from --host.
+  --net-server-ip IP   Server IP used for NIC auto-detection. Default: --host.
+  --net-csv PATH       Local NIC CSV path. Default: OUTDIR/network_utilization.csv.
+  --metrics-ssh TARGET Convenience: sets both --cpu-ssh and --net-ssh.
   --reset              Delete this script's CSV before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -103,6 +112,11 @@ while [[ $# -gt 0 ]]; do
     --cpu-interval) CPU_INTERVAL="${2:-}"; shift 2 ;;
     --server-pid) SERVER_PID="${2:-}"; shift 2 ;;
     --server-process) SERVER_PROCESS="${2:-}"; shift 2 ;;
+    --net-ssh) NET_SSH="${2:-}"; shift 2 ;;
+    --netdev) NETDEV="${2:-}"; shift 2 ;;
+    --net-server-ip) NET_SERVER_IP="${2:-}"; shift 2 ;;
+    --net-csv) NET_CSV="${2:-}"; shift 2 ;;
+    --metrics-ssh) CPU_SSH="${2:-}"; NET_SSH="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -122,6 +136,9 @@ mkdir -p "$OUTDIR"
 if [[ -z "$CSV_PATH" ]]; then
   CSV_PATH="$OUTDIR/tcp_cloudlab_clients.csv"
 fi
+if [[ -z "$NET_CSV" ]]; then
+  NET_CSV="$OUTDIR/network_utilization.csv"
+fi
 
 if [[ "$RESET" -eq 1 ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -137,7 +154,7 @@ echo "  host=$HOST port=$PORT clients=${CLIENTS//,/ } csv=$CSV_PATH"
 for C in ${CLIENTS//,/ }; do
   echo
   echo "== TCP: $C clients =="
-  run_with_optional_cpu "TCP" "tcp" "$C" 0 "$BENCHMARK" \
+  run_with_optional_metrics "TCP" "tcp" "$C" 0 "$OPS" "$BENCHMARK" \
     --host "$HOST" --port "$PORT" \
     --clients "$C" --ops "$OPS" --keys "$KEYS" \
     --value-size "$VALUE_SIZE" --get-ratio "$GET_RATIO" \

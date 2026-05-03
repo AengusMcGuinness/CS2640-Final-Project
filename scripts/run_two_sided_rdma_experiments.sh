@@ -35,6 +35,10 @@ CPU_CSV="experiments/cpu_utilization.csv"
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server_rdma"
+NET_SSH=""
+NETDEV=""
+NET_SERVER_IP=""
+NET_CSV=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -75,6 +79,11 @@ Options:
   --cpu-interval SEC   CPU sample interval. Default: 0.20.
   --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server_rdma.
   --server-process N   Process name for pgrep. Default: kv_server_rdma.
+  --net-ssh USER@HOST  SSH target for the server node; enables NIC bytes/op.
+  --netdev DEV         Server NIC to sample. Default: auto-detect from --host.
+  --net-server-ip IP   Server IP used for NIC auto-detection. Default: --host.
+  --net-csv PATH       Local NIC CSV path. Default: OUTDIR/network_utilization.csv.
+  --metrics-ssh TARGET Convenience: sets both --cpu-ssh and --net-ssh.
   --reset              Delete this script's CSVs before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -124,6 +133,11 @@ while [[ $# -gt 0 ]]; do
     --cpu-interval) CPU_INTERVAL="${2:-}"; shift 2 ;;
     --server-pid) SERVER_PID="${2:-}"; shift 2 ;;
     --server-process) SERVER_PROCESS="${2:-}"; shift 2 ;;
+    --net-ssh) NET_SSH="${2:-}"; shift 2 ;;
+    --netdev) NETDEV="${2:-}"; shift 2 ;;
+    --net-server-ip) NET_SERVER_IP="${2:-}"; shift 2 ;;
+    --net-csv) NET_CSV="${2:-}"; shift 2 ;;
+    --metrics-ssh) CPU_SSH="${2:-}"; NET_SSH="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -144,6 +158,7 @@ CLIENTS_CSV="${CLIENTS_CSV:-$OUTDIR/rdma_two_sided_clients.csv}"
 RATIO_CSV="${RATIO_CSV:-$OUTDIR/rdma_two_sided_ratio.csv}"
 ZIPF_CSV="${ZIPF_CSV:-$OUTDIR/rdma_two_sided_zipf.csv}"
 VALSIZE_CSV="${VALSIZE_CSV:-$OUTDIR/rdma_two_sided_valsize.csv}"
+NET_CSV="${NET_CSV:-$OUTDIR/network_utilization.csv}"
 
 if [[ "$RESET" -eq 1 ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -159,7 +174,7 @@ echo "  host=$HOST port=$PORT device=$DEVICE outdir=$OUTDIR"
 for C in ${CLIENTS//,/ }; do
   echo
   echo "== Two-sided RDMA clients: $C =="
-  run_with_optional_cpu "Two-Sided RDMA" "two_sided_rdma" "$C" 0 "$CLIENT" \
+  run_with_optional_metrics "Two-Sided RDMA" "two_sided_rdma" "$C" 0 "$OPS" "$CLIENT" \
     --host "$HOST" --port "$PORT" \
     --mode two-sided --device "$DEVICE" \
     --benchmark \
