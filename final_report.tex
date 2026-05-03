@@ -4,8 +4,11 @@
 \usepackage{amsmath}
 \usepackage{booktabs}
 \usepackage{enumitem}
+\usepackage{float}
 \usepackage{graphicx}
 \usepackage{multirow}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
 
 \newcommand{\sys}{RCache-RDMA}
 \newcommand{\todo}[1]{}
@@ -140,30 +143,50 @@ The TCP and two-sided RDMA modes use the same text protocol and same
 \texttt{KeyValueStore} logic.  The one-sided mode uses a different storage
 layout because remote clients need deterministic address arithmetic.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\fbox{\begin{minipage}{0.94\linewidth}
-\centering
-\vspace{0.5em}
-\textbf{Client}\\
-workload generator / interactive shell\\
-\vspace{0.5em}
-$\downarrow$ TCP commands \quad $\downarrow$ RDMA SEND \quad $\downarrow$ RDMA READ\\
-\vspace{0.5em}
-\textbf{Transport}\\
-TCP sockets \quad two-sided RC QP \quad one-sided RC QP\\
-\vspace{0.5em}
-$\downarrow$ \hfill $\downarrow$ \hfill $\downarrow$\\
-\vspace{0.5em}
-\textbf{Server}\\
-event-loop request handler \quad RDMA request handler \quad registered slot array
-\vspace{0.5em}
-\end{minipage}}
-\caption{High-level structure of \sys{}.  TCP and two-sided RDMA enter
-server-side request handling.  One-sided RDMA reads directly from a registered
-memory region and bypasses the server request loop after connection setup.}
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, align=center, inner sep=5pt, minimum height=0.7cm},
+  mode/.style={box, fill=gray!8, text width=0.25\textwidth},
+  work/.style={box, fill=gray!3, text width=0.25\textwidth},
+  note/.style={align=center, text width=0.25\textwidth, font=\footnotesize},
+  arrow/.style={-{Latex[length=2.2mm]}, thick}
+]
+\node[box, fill=gray!12, text width=0.88\textwidth] (client)
+  {\textbf{Client}\\benchmark workers / interactive shell};
+
+\node[mode, below=0.55cm of client.south, anchor=north, xshift=-0.31\textwidth] (tcp)
+  {\textbf{TCP/RPC}\\send text command over socket};
+\node[mode, below=0.55cm of client.south, anchor=north] (rdma2)
+  {\textbf{Two-sided RDMA}\\post SEND, wait for response};
+\node[mode, below=0.55cm of client.south, anchor=north, xshift=0.31\textwidth] (rdma1)
+  {\textbf{One-sided RDMA}\\READ slot directly\\optional \texttt{FETCH\_AND\_ADD}};
+
+\node[work, below=0.55cm of tcp] (tcpwork)
+  {\textbf{Server CPU}\\event loop\\text parser\\\texttt{KeyValueStore}};
+\node[work, below=0.55cm of rdma2] (rdma2work)
+  {\textbf{Server CPU}\\poll completions\\text parser\\\texttt{KeyValueStore}};
+\node[work, below=0.55cm of rdma1] (rdma1work)
+  {\textbf{Registered memory}\\fixed slot array\\client validates key};
+
+\node[note, below=0.12cm of tcpwork] {per-request server handling};
+\node[note, below=0.12cm of rdma2work] {per-request server handling};
+\node[note, below=0.12cm of rdma1work] {server request loop bypassed after setup};
+
+\draw[arrow] (client.south) -- ++(0,-0.18) -| (tcp.north);
+\draw[arrow] (client.south) -- (rdma2.north);
+\draw[arrow] (client.south) -- ++(0,-0.18) -| (rdma1.north);
+\draw[arrow] (tcp.south) -- (tcpwork.north);
+\draw[arrow] (rdma2.south) -- (rdma2work.north);
+\draw[arrow] (rdma1.south) -- (rdma1work.north);
+\end{tikzpicture}
+\caption{Data paths compared in \sys{}.  TCP and two-sided RDMA both execute
+server-side request handling on every operation.  One-sided RDMA reads the
+registered slot array directly, optionally issuing one atomic metadata update,
+and bypasses the server request loop after connection setup.}
 \label{fig:architecture}
-\end{figure}
+\end{figure*}
 
 \subsection{TCP Baseline}
 
@@ -193,7 +216,7 @@ asking the server.  The one-sided store is therefore a flat open-addressing
 hash table with 4096 fixed-size slots.  Each slot is exactly 1024 bytes and is
 aligned to 1024 bytes.  The full registered region is 4~MiB.
 
-\begin{table}[t]
+\begin{table}[H]
 \centering
 \caption{RDMA-readable slot layout.}
 \label{tab:slot-layout}
@@ -244,6 +267,27 @@ sampled \texttt{ens1f1np1} for host network counters.  The code was built with
 CMake and \texttt{libibverbs}; RDMA targets are compiled only when the verbs
 library is available.
 
+\begin{table}[t]
+\centering
+\caption{Final CloudLab experiment configuration.}
+\label{tab:environment}
+\begin{tabular}{ll}
+\toprule
+Item & Value \\
+\midrule
+Server data IP & \texttt{10.10.1.1} \\
+Client data IP & \texttt{10.10.1.2} \\
+Private netdev & \texttt{ens1f1np1} \\
+RDMA device & \texttt{mlx5\_3} \\
+Control netdev & \texttt{eno49np0} \\
+Control RDMA device & \texttt{mlx5\_0} \\
+Compiler & GNU C++ 11.4.0 \\
+Build system & CMake + \texttt{libibverbs} \\
+Trials per point & 3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{Workloads}
 
 The final client-count sweep used 1, 2, 4, and 8 clients with 100,000 measured
@@ -258,6 +302,13 @@ GET/SET workload.
 The metadata experiment compared one-sided reads with and without one
 \texttt{FETCH\_AND\_ADD} per operation.  All final runs completed with zero
 warmup errors and zero measured errors.
+
+Before plotting, I ran a consistency check over the final trial directories.
+Each of the three trials contained TCP, two-sided RDMA, one-sided RDMA,
+one-sided RDMA with metadata, CPU, and network-counter CSVs.  Every benchmark
+CSV covered the same client counts, 1, 2, 4, and 8, and every aggregated
+summary row reported \texttt{trial\_count=3}.  This check is important because
+the final plots combine multiple scripts and data transfers from CloudLab.
 
 \subsection{Metrics}
 
@@ -351,14 +402,16 @@ from 12~$\mu$s to 15--16~$\mu$s.  The added p99 cost is therefore
 
 \begin{figure*}[t]
 \centering
-\includegraphics[width=0.49\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/mean_latency_vs_clients_errorbars.png}
+\includegraphics[width=0.32\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/throughput_vs_clients_errorbars.png}
 \hfill
-\includegraphics[width=0.49\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/p99_latency_vs_clients_errorbars.png}
+\includegraphics[width=0.32\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/mean_latency_vs_clients_errorbars.png}
+\hfill
+\includegraphics[width=0.32\textwidth]{plots/final_summary_mlx5_3_100k/metadata_overhead/p99_latency_vs_clients_errorbars.png}
 \caption{One-sided RDMA metadata overhead.  The metadata variant performs an
 RDMA \texttt{FETCH\_AND\_ADD} after every RDMA read.  Points are means across
 three trials and error bars show sample standard deviation.  The atomic
-operation adds a consistent latency penalty, which is the central cost
-predicted by the proposal.}
+operation reduces throughput and adds a consistent latency penalty, which is
+the central cost predicted by the proposal.}
 \label{fig:metadata-overhead}
 \end{figure*}
 
@@ -557,3 +610,8 @@ Vahdat.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \end{document}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%% Local Variables:
+%%% mode: LaTeX
+%%% TeX-master: t
+%%% End:
