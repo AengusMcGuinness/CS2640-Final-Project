@@ -1,3 +1,9 @@
+/**
+ * @file rdma_context.cpp
+ * @brief Verbs resource setup, QP connection, and RDMA operation posting.
+ * @ingroup networking
+ */
+
 #include "net/rdma_context.hpp"
 
 #include <cerrno>

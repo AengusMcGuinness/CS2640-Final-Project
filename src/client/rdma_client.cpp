@@ -1,59 +1,20 @@
-// Interactive and benchmark RDMA key-value client.
-//
-// Supports two operational modes (--mode) and two execution styles
-// (interactive vs. --benchmark):
-//
-//   --mode two-sided  (default)
-//     Uses RDMA send/recv.  Interactive by default; add --benchmark for
-//     two-sided throughput and latency sweeps.
-//
-//   --mode one-sided
-//     Interactive: GET / GET_META / SET / QUIT at a prompt.
-//     Benchmark:   add --benchmark to run a timed loop and emit a CSV row
-//                  compatible with plot_benchmark.py.
-//
-// One-sided benchmark flags:
-//   --benchmark          enable benchmark mode
-//   --clients N          concurrent RDMA connections (default 1)
-//   --ops N              measured operations (default 10000)
-//   --warmup N           warmup operations discarded before timing (default 1000)
-//   --keys N             key-space size; must match --preload on the server (default 1024)
-//   --metadata           also issue FETCH_AND_ADD after each read (LRU simulation)
-//   --csv PATH           append one result row to PATH (creates header if needed)
-//
-// Two-sided benchmark also supports:
-//   --clients N          concurrent RDMA connections
-//   --value-size N       generated SET payload size
-//   --get-ratio R        fraction of GET operations
-//   --zipf-s S           Zipf skew; 0 means uniform
-//   --no-prefill         skip initial SET pass over the keyspace
-//
-// Usage examples:
-//   # Interactive two-sided
-//   kv_client_rdma --host <ip> --mode two-sided --device mlx5_0
-//
-//   # Two-sided benchmark
-//   kv_client_rdma --host <ip> --mode two-sided --device mlx5_0 \
-//                  --benchmark --clients 4 --ops 10000 --keys 1024 \
-//                  --value-size 64 --get-ratio 0.95 --zipf-s 0.8 \
-//                  --warmup 1000 --csv experiments/rdma_two_sided_clients.csv
-//
-//   # Interactive one-sided smoke test
-//   kv_client_rdma --host <ip> --mode one-sided --device mlx5_0
-//   #   GET key0
-//   #   SET key0 new-value
-//   #   GET_META key0
-//
-//   # One-sided benchmark, no metadata, 4 client sweeps
-//   kv_client_rdma --host <ip> --mode one-sided --device mlx5_0 \
-//                  --benchmark --clients 4 --ops 10000 --warmup 1000 --keys 1024 \
-//                  --csv experiments/rdma_one_sided_clients.csv
-//
-//   # One-sided benchmark with LRU metadata overhead
-//   kv_client_rdma --host <ip> --mode one-sided --device mlx5_0 \
-//                  --benchmark --clients 4 --ops 10000 --warmup 1000 --keys 1024 \
-//                  --metadata \
-//                  --csv experiments/rdma_one_sided_metadata.csv
+/**
+ * @file rdma_client.cpp
+ * @brief Interactive and benchmark RDMA key-value client.
+ * @ingroup executables
+ *
+ * Supports two operational modes (`--mode`) and two execution styles
+ * (interactive vs. `--benchmark`):
+ *
+ * - `--mode two-sided`: use RDMA send/receive.  Interactive by default; add
+ *   `--benchmark` for throughput and latency sweeps.
+ * - `--mode one-sided`: use RDMA READ/WRITE directly against the server's
+ *   exported `kvstore::RdmaStore`.  In benchmark mode this runs GET-only
+ *   reads, optionally with one `FETCH_AND_ADD` metadata atomic after each read.
+ *
+ * The benchmark CSV schema intentionally matches the TCP benchmark so plotting
+ * scripts can compare transports on common axes.
+ */
 
 #include "kvstore/rdma_store.hpp"
 #include "net/rdma_context.hpp"

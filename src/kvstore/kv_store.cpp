@@ -1,3 +1,9 @@
+/**
+ * @file kv_store.cpp
+ * @brief Implementation of the mutex-protected request/response store.
+ * @ingroup storage
+ */
+
 // Include the declaration of the store methods we are implementing here.
 #include "kvstore/kv_store.hpp"
 

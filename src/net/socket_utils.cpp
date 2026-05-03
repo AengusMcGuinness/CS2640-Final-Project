@@ -1,3 +1,9 @@
+/**
+ * @file socket_utils.cpp
+ * @brief POSIX socket setup and blocking line-I/O helpers.
+ * @ingroup networking
+ */
+
 // Bring in the helper declarations.
 #include "net/socket_utils.hpp"
 

@@ -1,143 +1,267 @@
+/**
+ * @file rdma_context.hpp
+ * @brief RAII-style wrapper around one reliable-connected RDMA queue pair.
+ * @ingroup networking
+ *
+ * `RdmaContext` owns the verbs resources needed by one peer connection:
+ * device context, protection domain, completion queue, queue pair, and pinned
+ * send/receive buffers.  It supports both two-sided send/receive and one-sided
+ * read/write/atomic operations.
+ */
 #pragma once
 
-// libibverbs is the user-space RDMA verbs API. It is only present on Linux
-// systems with an RDMA-capable NIC and the rdma-core package installed.
 #include <infiniband/verbs.h>
 
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string_view>
 
 namespace net {
 
-// Wire-format structure exchanged over a TCP side-channel before RDMA begins.
-// Both peers send and receive one of these to establish QP connectivity.
-// The rkey and addr fields are only meaningful in the server's copy and are
-// used by clients for one-sided RDMA READ/WRITE operations.
+/**
+ * @brief Queue-pair and memory-region metadata exchanged before RDMA traffic.
+ * @ingroup networking
+ *
+ * The project exchanges this structure over a normal TCP side channel.  Both
+ * peers need QP routing information to connect.  One-sided clients also need
+ * the server's exported memory address and remote key.
+ */
 struct QpInfo {
-    uint32_t qp_num;    // queue pair number on the sending side
-    uint16_t lid;       // local identifier (0 for pure RoCE fabrics)
-    uint8_t  gid[16];   // GID in IPv6 format; index 0 is used for RoCE v2
-    uint32_t rkey;      // remote key for the exported memory region (one-sided)
-    uint64_t addr;      // base virtual address of the exported region (one-sided)
-    uint64_t num_slots; // number of RdmaSlots in the exported region (one-sided)
+    /// Queue-pair number on the sending side.
+    uint32_t qp_num;
+
+    /// Local identifier.  This is commonly zero on pure RoCE fabrics.
+    uint16_t lid;
+
+    /// GID in IPv6 raw-byte form; index 0 is used by this project.
+    uint8_t gid[16];
+
+    /// Remote key for the exported one-sided memory region.
+    uint32_t rkey;
+
+    /// Base virtual address of the exported one-sided memory region.
+    uint64_t addr;
+
+    /// Number of `kvstore::RdmaSlot` entries in the exported region.
+    uint64_t num_slots;
 };
 
-// Maximum number of bytes per RDMA message.
-// Sized to comfortably hold any single protocol request or response.
+/// Maximum payload bytes in the reusable two-sided send/receive buffers.
 static constexpr std::size_t RDMA_MSG_SIZE = 4096;
 
-// RdmaContext owns one Reliable Connected (RC) queue pair and the pinned send
-// and receive buffers that back it.  Each peer-to-peer connection gets its
-// own RdmaContext.
-//
-// Typical two-sided usage (server and client mirror each other):
-//   ctx.init();
-//   local = ctx.local_info();          // send to peer over TCP
-//   ctx.connect(remote_info);          // received from peer over TCP
-//   ctx.post_recv();                   // arm the receive buffer
-//   ctx.post_send("GET foo\n");        // send a request
-//   ctx.poll_completion();             // wait for send to complete
-//   ctx.poll_completion();             // wait for receive to complete
-//   auto reply = ctx.recv_data();      // inspect the received bytes
-//
-// One-sided READ usage (client only, after connect()):
-//   ctx.post_rdma_read(remote_addr + offset, remote_rkey, local_buf, len);
-//   ctx.poll_completion();
-//
-// One-sided WRITE usage is symmetric: register a local source buffer, post the
-// write to the remote slot address, then poll the signaled completion.
+/**
+ * @brief Owns one RDMA reliable-connected queue pair and its resources.
+ * @ingroup networking
+ *
+ * Typical two-sided flow:
+ *
+ * 1. `init()`
+ * 2. exchange `local_info()` with the peer over TCP
+ * 3. `connect(remote_info)`
+ * 4. `post_recv()`, `post_send()`, and `poll_completion()`
+ *
+ * Typical one-sided client flow:
+ *
+ * 1. complete the same QP handshake
+ * 2. register a local destination/source buffer with `reg_mr()`
+ * 3. call `post_rdma_read()`, `post_rdma_write()`, or
+ *    `post_fetch_and_add()`
+ * 4. call `poll_completion()` before reusing or deregistering the buffer
+ *
+ * @warning The class is not movable or copyable because registered buffers and
+ *          verbs objects are tied to stable addresses.
+ */
 class RdmaContext {
 public:
-    RdmaContext()  = default;
+    RdmaContext() = default;
+
+    /// Release all verbs resources in reverse-allocation order.
     ~RdmaContext() { destroy(); }
 
-    // Not copyable or movable: libibverbs resources are tied to the addresses
-    // of the pinned send_buf_ and recv_buf_ members.
-    RdmaContext(const RdmaContext&)            = delete;
+    RdmaContext(const RdmaContext&) = delete;
     RdmaContext& operator=(const RdmaContext&) = delete;
 
-    // Open the RDMA device and allocate a QP.
-    // Pass nullptr to use the first device found (correct on single-NIC nodes).
-    // Transitions the QP from RESET to INIT.
+    /**
+     * @brief Open an RDMA device and create the queue-pair resources.
+     *
+     * @param device_name Optional verbs device name such as `mlx5_0`.  Passing
+     *        `nullptr` selects the first visible device.
+     * @return `true` if the context reached QP state `INIT`.
+     *
+     * @post On success, send/receive buffers are registered and receive work
+     *       requests may be posted.
+     */
     bool init(const char* device_name = nullptr);
 
-    // Return the local QP info to send to the remote peer.
-    // Call after init() and, if exporting a memory region for one-sided reads,
-    // after calling set_exported_region() so that rkey/addr/num_slots are filled.
+    /**
+     * @brief Return local metadata to send to the peer.
+     *
+     * @return QP routing information plus exported-region metadata if
+     *         `set_exported_region()` has been called.
+     */
     QpInfo local_info() const;
 
-    // Record the memory region exported for one-sided client reads so that
-    // local_info() can include rkey, addr, and num_slots.
+    /**
+     * @brief Attach one registered memory region to `local_info()` output.
+     *
+     * @param mr Memory region exported to one-sided clients.
+     * @param num_slots Number of fixed-size slots in the exported region.
+     *
+     * @pre `mr` must remain valid for as long as peers may issue one-sided
+     *      operations against the exported address/rkey.
+     */
     void set_exported_region(const ibv_mr* mr, uint64_t num_slots);
 
-    // Transition the QP from INIT through RTR to RTS using the remote peer's info.
-    // Must be called after init() and before posting any sends or receives.
+    /**
+     * @brief Transition the local QP from `INIT` through `RTR` to `RTS`.
+     *
+     * @param remote Metadata received from the peer.
+     * @return `true` if both state transitions succeed.
+     */
     bool connect(const QpInfo& remote);
 
-    // Pre-post a receive work request to catch the next inbound send.
-    // Must be called before the peer posts its matching send.
+    /**
+     * @brief Post one receive work request for a future two-sided send.
+     *
+     * @return `true` if the receive was accepted by the verbs provider.
+     */
     bool post_recv();
 
-    // Copy data into the send buffer and issue an RDMA SEND to the peer.
+    /**
+     * @brief Post one two-sided RDMA send.
+     *
+     * @param data Bytes to copy into the internal send buffer.
+     * @return `true` if the send work request was posted.
+     *
+     * @note Payloads larger than `RDMA_MSG_SIZE` are truncated by this helper.
+     */
     bool post_send(std::string_view data);
 
-    // Issue an RDMA READ that copies len bytes from remote memory into local_dst.
-    // local_lkey must be the lkey of a pre-registered MR that covers local_dst.
-    // The MR must remain registered until after poll_completion() returns,
-    // because the NIC DMAs into it asynchronously after this call returns.
+    /**
+     * @brief Post one one-sided RDMA read.
+     *
+     * @param remote_addr Remote virtual address to read from.
+     * @param remote_rkey Remote key authorizing access to `remote_addr`.
+     * @param local_dst Registered local destination buffer.
+     * @param len Number of bytes to read.
+     * @param local_lkey Local key for the memory region covering `local_dst`.
+     * @return `true` if the work request was posted.
+     *
+     * @pre `local_dst` must remain registered and alive until a successful
+     *      `poll_completion()` observes this operation's completion.
+     */
     bool post_rdma_read(uint64_t remote_addr, uint32_t remote_rkey,
                         void* local_dst, uint32_t len, uint32_t local_lkey);
 
-    // Issue an RDMA WRITE that copies len bytes from local_src into remote memory.
-    // local_lkey must be the lkey of a pre-registered MR that covers local_src.
-    // The MR must remain registered until after poll_completion() returns.
+    /**
+     * @brief Post one one-sided RDMA write.
+     *
+     * @param remote_addr Remote virtual address to write to.
+     * @param remote_rkey Remote key authorizing access to `remote_addr`.
+     * @param local_src Registered local source buffer.
+     * @param len Number of bytes to write.
+     * @param local_lkey Local key for the memory region covering `local_src`.
+     * @return `true` if the work request was posted.
+     *
+     * @pre `local_src` must remain registered and alive until completion.
+     */
     bool post_rdma_write(uint64_t remote_addr, uint32_t remote_rkey,
                          const void* local_src, uint32_t len, uint32_t local_lkey);
 
-    // Issue an RDMA FETCH_AND_ADD on an 8-byte counter at remote_addr.
-    // local_lkey must be the lkey of a pre-registered MR that covers local_dst.
-    // The MR must remain registered until after poll_completion() returns.
+    /**
+     * @brief Post one RDMA atomic fetch-and-add.
+     *
+     * @param remote_addr 8-byte-aligned remote counter address.
+     * @param remote_rkey Remote key authorizing atomic access.
+     * @param local_dst Registered 8-byte local buffer that receives the old value.
+     * @param add_val Value to add to the remote counter.
+     * @param local_lkey Local key for the memory region covering `local_dst`.
+     * @return `true` if the atomic work request was posted.
+     *
+     * @pre `remote_addr` and `local_dst` must both be 8-byte aligned.
+     */
     bool post_fetch_and_add(uint64_t remote_addr, uint32_t remote_rkey,
                             void* local_dst, uint64_t add_val, uint32_t local_lkey);
 
-    // Block-spin the completion queue until one completion event appears.
-    // Returns false on error or non-success work completion status.
+    /**
+     * @brief Busy-poll the completion queue until one completion appears.
+     *
+     * @return `true` for a successful work completion; `false` for CQ errors or
+     *         failed work completions.
+     *
+     * @note Busy-polling is intentional for the benchmark because sleeping in
+     *       the data path would add scheduler jitter to latency measurements.
+     */
     bool poll_completion();
 
-    // Register a buffer with this context's protection domain.
-    // The returned ibv_mr must be kept alive until all in-flight operations
-    // that use it have been polled to completion, then deregistered by the caller.
+    /**
+     * @brief Register an additional local memory buffer.
+     *
+     * @param buf Buffer start address.
+     * @param len Buffer length in bytes.
+     * @param access_flags Verbs access flags such as `IBV_ACCESS_LOCAL_WRITE`.
+     * @return Registered memory region, or `nullptr` on failure.
+     *
+     * @warning The caller owns the returned `ibv_mr*` and must deregister it.
+     */
     ibv_mr* reg_mr(void* buf, std::size_t len, int access_flags);
 
-    // View the receive buffer after a successful recv completion.
+    /**
+     * @brief View the bytes received by the most recent receive completion.
+     */
     std::string_view recv_data() const;
 
-    // Release all libibverbs resources in reverse-allocation order.
+    /**
+     * @brief Release all verbs resources owned by this context.
+     *
+     * Safe to call more than once.
+     */
     void destroy();
 
-    // Expose the protection domain so callers can register additional memory.
+    /**
+     * @brief Expose the protection domain for registering external buffers.
+     */
     ibv_pd* pd() const { return pd_; }
 
 private:
-    ibv_context* ctx_     = nullptr;
-    ibv_pd*      pd_      = nullptr;
-    ibv_cq*      cq_      = nullptr;
-    ibv_qp*      qp_      = nullptr;
-    ibv_mr*      send_mr_ = nullptr;
-    ibv_mr*      recv_mr_ = nullptr;
+    /// Opened RDMA device context.
+    ibv_context* ctx_ = nullptr;
 
-    // Pinned message buffers - must not be moved while the MRs are registered.
-    char     send_buf_[RDMA_MSG_SIZE] = {};
-    char     recv_buf_[RDMA_MSG_SIZE] = {};
-    uint32_t recv_len_                = 0;
+    /// Protection domain for queue pair and memory registrations.
+    ibv_pd* pd_ = nullptr;
 
-    // Metadata about the exported one-sided region (set by set_exported_region).
-    uint32_t exported_rkey_      = 0;
-    uint64_t exported_addr_      = 0;
+    /// Shared completion queue for send and receive completions.
+    ibv_cq* cq_ = nullptr;
+
+    /// Reliable Connected queue pair.
+    ibv_qp* qp_ = nullptr;
+
+    /// Memory region for `send_buf_`.
+    ibv_mr* send_mr_ = nullptr;
+
+    /// Memory region for `recv_buf_`.
+    ibv_mr* recv_mr_ = nullptr;
+
+    /// Reusable pinned send buffer for two-sided messages.
+    char send_buf_[RDMA_MSG_SIZE] = {};
+
+    /// Reusable pinned receive buffer for two-sided messages.
+    char recv_buf_[RDMA_MSG_SIZE] = {};
+
+    /// Valid byte count from the most recent receive completion.
+    uint32_t recv_len_ = 0;
+
+    /// Remote key for the exported one-sided memory region.
+    uint32_t exported_rkey_ = 0;
+
+    /// Base address for the exported one-sided memory region.
+    uint64_t exported_addr_ = 0;
+
+    /// Number of slots in the exported one-sided memory region.
     uint64_t exported_num_slots_ = 0;
 
+    /// RDMA port number used on the selected device.
     uint8_t port_num_ = 1;
 };
 
-} // namespace net
+}  // namespace net

@@ -1,3 +1,9 @@
+/**
+ * @file rdma_store.cpp
+ * @brief Implementation of the fixed-layout one-sided RDMA hash table.
+ * @ingroup storage
+ */
+
 #include "kvstore/rdma_store.hpp"
 
 #include <cstring>

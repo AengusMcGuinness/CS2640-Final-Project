@@ -1,3 +1,9 @@
+/**
+ * @file main.cpp
+ * @brief Interactive TCP client for manually exercising the text protocol.
+ * @ingroup executables
+ */
+
 // Socket helpers for connection setup and line-oriented I/O.
 #include "net/socket_utils.hpp"
 // The same parser used by the server is reused to decide when QUIT was entered.

@@ -1,3 +1,9 @@
+/**
+ * @file kv_benchmark.cpp
+ * @brief TCP workload generator and CSV-producing benchmark driver.
+ * @ingroup executables
+ */
+
 // The benchmark talks to the same TCP socket helpers used by the client and server.
 #include "net/socket_utils.hpp"
 

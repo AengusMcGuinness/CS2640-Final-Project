@@ -109,3 +109,8 @@ int main() {
     std::cout << "protocol_test passed\n";
     return EXIT_SUCCESS;
 }
+/**
+ * @file protocol_test.cpp
+ * @brief Unit tests for request parsing and response serialization.
+ * @ingroup tests
+ */

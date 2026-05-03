@@ -1,3 +1,9 @@
+/**
+ * @file event_loop.cpp
+ * @brief Implementation of the coroutine scheduler used by the TCP server.
+ * @ingroup networking
+ */
+
 // The implementation of the coroutine scheduler declared in the header.
 #include "net/event_loop.hpp"
 

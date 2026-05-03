@@ -11,6 +11,23 @@ include(CTest)
 find_package(Threads REQUIRED)
 
 # ---------------------------------------------------------------------------
+# Optional generated source documentation
+# ---------------------------------------------------------------------------
+
+find_package(Doxygen QUIET)
+
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating Doxygen HTML documentation"
+        VERBATIM
+    )
+else()
+    message(STATUS "Doxygen not found -- skipping docs target")
+endif()
+
+# ---------------------------------------------------------------------------
 # Core library (TCP baseline - no RDMA dependency)
 # ---------------------------------------------------------------------------
 

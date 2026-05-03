@@ -1,26 +1,25 @@
-// RDMA key-value server.
-//
-// Supports two operational modes selected with --mode:
-//
-//   two-sided (default)
-//     Uses RDMA send/recv for all client operations.  The protocol is
-//     identical to the TCP baseline (same parse_request / serialize_response
-//     paths), so throughput and latency differences isolate the transport.
-//     One thread is spawned per client connection.
-//
-//   one-sided
-//     Pre-populates the RdmaStore with a configurable number of key-value
-//     pairs, registers the slot array as a remotely readable memory region,
-//     and hands clients the rkey and base address over the TCP side-channel.
-//     After the handshake, clients issue RDMA READs/WRITEs directly without
-//     any server CPU involvement in the data path.
-//
-// Connection handshake (both modes):
-//   1. Client opens a TCP connection to the server (default port 9091).
-//   2. Server sends its QpInfo (including rkey/addr for one-sided mode).
-//   3. Client sends its QpInfo.
-//   4. Both sides transition their QPs to RTS.
-//   5. TCP connection is closed; RDMA takes over.
+/**
+ * @file rdma_main.cpp
+ * @brief RDMA key-value server for two-sided and one-sided modes.
+ * @ingroup executables
+ *
+ * Two-sided mode uses RDMA send/receive for all client operations.  It shares
+ * the same text protocol and `kvstore::KeyValueStore` request semantics as the
+ * TCP server, so measurements primarily isolate transport differences.
+ *
+ * One-sided mode pre-populates `kvstore::RdmaStore`, registers the slot array
+ * as remotely accessible memory, and sends clients the remote key and base
+ * address over the TCP side channel.  After queue-pair setup, client RDMA reads
+ * and metadata atomics do not require server CPU involvement.
+ *
+ * Connection handshake in both modes:
+ *
+ * 1. Client opens a TCP connection to the server.
+ * 2. Server sends `net::QpInfo`.
+ * 3. Client sends `net::QpInfo`.
+ * 4. Both sides transition their QPs to ready-to-send.
+ * 5. TCP setup connection closes and RDMA handles the data path.
+ */
 
 #include "kvstore/rdma_store.hpp"
 #include "kvstore/kv_store.hpp"

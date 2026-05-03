@@ -1,3 +1,9 @@
+/**
+ * @file text_protocol.cpp
+ * @brief Parser and serializer implementation for the text key-value protocol.
+ * @ingroup protocol
+ */
+
 // Bring in the protocol declarations we are implementing.
 #include "protocol/text_protocol.hpp"
 

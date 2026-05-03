@@ -3,6 +3,7 @@ build/
 .mplconfig/
 .cache/
 word-docx/
+docs/doxygen/
 __pycache__/
 .#*
 *.o

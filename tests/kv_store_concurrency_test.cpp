@@ -116,3 +116,8 @@ int main() {
     std::cout << "kv_store_concurrency_test passed\n";
     return EXIT_SUCCESS;
 }
+/**
+ * @file kv_store_concurrency_test.cpp
+ * @brief Concurrent access test for the mutex-protected key-value store.
+ * @ingroup tests
+ */

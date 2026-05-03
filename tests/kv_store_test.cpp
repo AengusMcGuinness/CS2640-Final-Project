@@ -75,3 +75,8 @@ int main() {
     std::cout << "kv_store_test passed\n";
     return EXIT_SUCCESS;
 }
+/**
+ * @file kv_store_test.cpp
+ * @brief Unit tests for basic `kvstore::KeyValueStore` behavior.
+ * @ingroup tests
+ */

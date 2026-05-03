@@ -1,3 +1,9 @@
+/**
+ * @file main.cpp
+ * @brief TCP key-value server entry point and coroutine connection handlers.
+ * @ingroup executables
+ */
+
 // Key-value storage implementation used to answer client requests.
 #include "kvstore/kv_store.hpp"
 // The coroutine event loop that drives nonblocking socket readiness.
