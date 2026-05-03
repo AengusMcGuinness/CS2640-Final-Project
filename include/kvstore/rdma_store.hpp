@@ -51,8 +51,8 @@ static_assert(offsetof(RdmaSlot, access_count) == 8,
 
 // RdmaStore is a flat open-addressing hash table laid out in a single
 // contiguous array of RdmaSlots.  The array is registered with libibverbs so
-// that remote clients can issue one-sided RDMA READ operations directly into
-// it without server CPU involvement.
+// that remote clients can issue one-sided RDMA READ/WRITE operations directly
+// into it without server CPU involvement.
 //
 // The server interacts with the store through set/get/erase.
 // Clients compute the same FNV-1a hash and probe offset arithmetic locally,

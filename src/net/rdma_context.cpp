@@ -252,7 +252,7 @@ bool RdmaContext::post_send(std::string_view data) {
 }
 
 // ---------------------------------------------------------------------------
-// One-sided: post_rdma_read / post_fetch_and_add
+// One-sided: post_rdma_read / post_rdma_write / post_fetch_and_add
 // ---------------------------------------------------------------------------
 
 bool RdmaContext::post_rdma_read(uint64_t remote_addr, uint32_t remote_rkey,
@@ -279,6 +279,35 @@ bool RdmaContext::post_rdma_read(uint64_t remote_addr, uint32_t remote_rkey,
     ibv_send_wr* bad = nullptr;
     if (ibv_post_send(qp_, &wr, &bad) != 0) {
         std::cerr << "rdma: ibv_post_send(RDMA_READ) failed: " << std::strerror(errno) << '\n';
+        return false;
+    }
+    return true;
+}
+
+bool RdmaContext::post_rdma_write(uint64_t remote_addr, uint32_t remote_rkey,
+                                  const void* local_src, uint32_t len,
+                                  uint32_t local_lkey) {
+    // local_lkey must come from an ibv_mr registered by the caller that covers
+    // local_src.  The caller must keep that MR registered until after
+    // poll_completion() returns, because the NIC reads from local_src
+    // asynchronously after this function returns.
+    ibv_sge sge  = {};
+    sge.addr     = reinterpret_cast<uint64_t>(const_cast<void*>(local_src));
+    sge.length   = len;
+    sge.lkey     = local_lkey;
+
+    ibv_send_wr wr         = {};
+    wr.wr_id               = 4;
+    wr.sg_list             = &sge;
+    wr.num_sge             = 1;
+    wr.opcode              = IBV_WR_RDMA_WRITE;
+    wr.send_flags          = IBV_SEND_SIGNALED;
+    wr.wr.rdma.remote_addr = remote_addr;
+    wr.wr.rdma.rkey        = remote_rkey;
+
+    ibv_send_wr* bad = nullptr;
+    if (ibv_post_send(qp_, &wr, &bad) != 0) {
+        std::cerr << "rdma: ibv_post_send(RDMA_WRITE) failed: " << std::strerror(errno) << '\n';
         return false;
     }
     return true;

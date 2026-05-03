@@ -13,7 +13,7 @@ namespace net {
 // Wire-format structure exchanged over a TCP side-channel before RDMA begins.
 // Both peers send and receive one of these to establish QP connectivity.
 // The rkey and addr fields are only meaningful in the server's copy and are
-// used by clients for one-sided RDMA READ operations (Phase 3).
+// used by clients for one-sided RDMA READ/WRITE operations.
 struct QpInfo {
     uint32_t qp_num;    // queue pair number on the sending side
     uint16_t lid;       // local identifier (0 for pure RoCE fabrics)
@@ -44,6 +44,9 @@ static constexpr std::size_t RDMA_MSG_SIZE = 4096;
 // One-sided READ usage (client only, after connect()):
 //   ctx.post_rdma_read(remote_addr + offset, remote_rkey, local_buf, len);
 //   ctx.poll_completion();
+//
+// One-sided WRITE usage is symmetric: register a local source buffer, post the
+// write to the remote slot address, then poll the signaled completion.
 class RdmaContext {
 public:
     RdmaContext()  = default;
@@ -85,6 +88,12 @@ public:
     // because the NIC DMAs into it asynchronously after this call returns.
     bool post_rdma_read(uint64_t remote_addr, uint32_t remote_rkey,
                         void* local_dst, uint32_t len, uint32_t local_lkey);
+
+    // Issue an RDMA WRITE that copies len bytes from local_src into remote memory.
+    // local_lkey must be the lkey of a pre-registered MR that covers local_src.
+    // The MR must remain registered until after poll_completion() returns.
+    bool post_rdma_write(uint64_t remote_addr, uint32_t remote_rkey,
+                         const void* local_src, uint32_t len, uint32_t local_lkey);
 
     // Issue an RDMA FETCH_AND_ADD on an 8-byte counter at remote_addr.
     // local_lkey must be the lkey of a pre-registered MR that covers local_dst.

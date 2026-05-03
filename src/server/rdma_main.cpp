@@ -12,8 +12,8 @@
 //     Pre-populates the RdmaStore with a configurable number of key-value
 //     pairs, registers the slot array as a remotely readable memory region,
 //     and hands clients the rkey and base address over the TCP side-channel.
-//     After the handshake, clients issue RDMA READs directly without any
-//     server CPU involvement in the data path.
+//     After the handshake, clients issue RDMA READs/WRITEs directly without
+//     any server CPU involvement in the data path.
 //
 // Connection handshake (both modes):
 //   1. Client opens a TCP connection to the server (default port 9091).
@@ -23,6 +23,7 @@
 //   5. TCP connection is closed; RDMA takes over.
 
 #include "kvstore/rdma_store.hpp"
+#include "kvstore/kv_store.hpp"
 #include "net/rdma_context.hpp"
 #include "protocol/text_protocol.hpp"
 
@@ -105,7 +106,7 @@ bool read_all(int fd, void* buf, std::size_t len) {
 // Perform the TCP handshake, then enter a request-response loop using
 // RDMA send/recv.  Mirrors the TCP server's handle_client logic exactly
 // so that benchmark comparisons reflect only transport differences.
-void handle_two_sided_client(int tcp_fd, kvstore::RdmaStore& store,
+void handle_two_sided_client(int tcp_fd, kvstore::KeyValueStore& store,
                               const char* device_name) {
     auto ctx = std::make_unique<net::RdmaContext>();
     if (!ctx->init(device_name)) {
@@ -146,7 +147,7 @@ void handle_two_sided_client(int tcp_fd, kvstore::RdmaStore& store,
         protocol::Request  req  = protocol::parse_request(line);
         protocol::Response resp;
 
-        // Route request to the RdmaStore (set/get/erase operations).
+        // Route request to the mutex-protected store (set/get/erase operations).
         using protocol::RequestType;
         using protocol::ResponseType;
         switch (req.type) {
@@ -191,12 +192,12 @@ void handle_two_sided_client(int tcp_fd, kvstore::RdmaStore& store,
 // ---------------------------------------------------------------------------
 
 // For one-sided RDMA, the server only needs to:
-//   1. Create a QP (so the client can target this server's memory via RDMA READ).
+//   1. Create a QP (so the client can target this server's memory via one-sided verbs).
 //   2. Exchange QP info including the store's rkey and base address.
 //   3. Transition to RTS and then become idle -- no CQ polling needed.
 //
-// After the handshake, the client issues RDMA READs independently.
-void handle_one_sided_client(int tcp_fd, ibv_mr* store_mr,
+// After the handshake, the client issues RDMA READs/WRITEs independently.
+void handle_one_sided_client(int tcp_fd, kvstore::RdmaStore& store,
                               uint64_t num_slots, const char* device_name) {
     auto ctx = std::make_unique<net::RdmaContext>();
     if (!ctx->init(device_name)) {
@@ -204,8 +205,14 @@ void handle_one_sided_client(int tcp_fd, ibv_mr* store_mr,
         return;
     }
 
+    ibv_mr* store_mr = store.register_mr(ctx->pd());
+    if (!store_mr) {
+        ::close(tcp_fd);
+        return;
+    }
+
     // Annotate our QpInfo with the store's rkey and base address so the
-    // client can issue RDMA READs against the slot array directly.
+    // client can issue RDMA READs/WRITEs against the slot array directly.
     ctx->set_exported_region(store_mr, num_slots);
 
     net::QpInfo local  = ctx->local_info();
@@ -213,12 +220,16 @@ void handle_one_sided_client(int tcp_fd, ibv_mr* store_mr,
     if (!write_all(tcp_fd, &local, sizeof(local)) ||
         !read_all(tcp_fd, &remote, sizeof(remote))) {
         std::cerr << "rdma server: one-sided QP info exchange failed\n";
+        ibv_dereg_mr(store_mr);
         ::close(tcp_fd);
         return;
     }
     ::close(tcp_fd);
 
-    if (!ctx->connect(remote)) return;
+    if (!ctx->connect(remote)) {
+        ibv_dereg_mr(store_mr);
+        return;
+    }
 
     std::cout << "rdma server: one-sided client connected (qpn=" << remote.qp_num
               << ")  rkey=0x" << std::hex << store_mr->rkey
@@ -226,13 +237,15 @@ void handle_one_sided_client(int tcp_fd, ibv_mr* store_mr,
               << std::dec << '\n';
 
     // The server is now idle on this path: the client drives all data movement.
-    // Block here to keep the QP alive for the duration of the benchmark.
-    // The client closes the control connection when it finishes.
+    // Block here to keep the QP and exported memory region alive for the
+    // duration of the benchmark.
     std::cout << "rdma server: one-sided data path active (server CPU idle)\n";
 
-    // Keep the thread alive by waiting; the client will terminate on its own.
+    // Keep the thread alive by waiting; experiment shutdown stops the process.
     // In a production system this would be replaced by a proper lifecycle signal.
     pause();
+
+    ibv_dereg_mr(store_mr);
 }
 
 } // namespace
@@ -260,61 +273,21 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // The store is shared across all client threads (set/get are mutex-free
-    // here because the RDMA path is single-writer by convention; add locking
-    // if concurrent server-side writes are needed).
-    kvstore::RdmaStore store;
+    kvstore::KeyValueStore rpc_store;
+    kvstore::RdmaStore one_sided_store;
 
-    // For one-sided mode, pre-populate the store so clients have data to read,
-    // then register the slot array as a remotely accessible memory region.
-    ibv_mr*   store_mr   = nullptr;
-    ibv_pd*   shared_pd  = nullptr;
-    ibv_context* shared_ctx = nullptr;
-
+    // For one-sided mode, pre-populate the store so clients have data to read.
+    // Each client handler registers the slot array with its own QP's protection
+    // domain before exporting the rkey/base address.
     if (one_sided) {
         std::cout << "rdma server: pre-loading " << preload_n << " key-value pairs\n";
         for (int i = 0; i < preload_n; ++i) {
             std::string k = "key"   + std::to_string(i);
             std::string v = "value" + std::to_string(i);
-            store.set(k, v);
+            one_sided_store.set(k, v);
         }
-
-        // Open a device context and PD just for registering the store region.
-        // Client QPs use their own RdmaContext instances.
-        int num_dev = 0;
-        ibv_device** dev_list = ibv_get_device_list(&num_dev);
-        if (!dev_list || num_dev == 0) {
-            std::cerr << "rdma server: no RDMA devices found\n";
-            return EXIT_FAILURE;
-        }
-        ibv_device* dev = dev_list[0];
-        if (device_name) {
-            for (int i = 0; i < num_dev; ++i) {
-                if (std::strcmp(ibv_get_device_name(dev_list[i]), device_name) == 0) {
-                    dev = dev_list[i];
-                    break;
-                }
-            }
-        }
-        shared_ctx = ibv_open_device(dev);
-        ibv_free_device_list(dev_list);
-        if (!shared_ctx) {
-            std::cerr << "rdma server: ibv_open_device failed\n";
-            return EXIT_FAILURE;
-        }
-        shared_pd = ibv_alloc_pd(shared_ctx);
-        if (!shared_pd) {
-            std::cerr << "rdma server: ibv_alloc_pd failed\n";
-            return EXIT_FAILURE;
-        }
-        store_mr = store.register_mr(shared_pd);
-        if (!store_mr) return EXIT_FAILURE;
-
-        std::cout << "rdma server: store registered  rkey=0x" << std::hex
-                  << store_mr->rkey << "  addr=0x"
-                  << reinterpret_cast<uint64_t>(store_mr->addr)
-                  << std::dec
-                  << "  size=" << kvstore::RdmaStore::region_size() << " bytes\n";
+        std::cout << "rdma server: store ready  size="
+                  << kvstore::RdmaStore::region_size() << " bytes\n";
     }
 
     int listen_fd = make_tcp_listener(port);
@@ -341,23 +314,17 @@ int main(int argc, char* argv[]) {
 
         // Detach a thread for each client so connections are served concurrently.
         if (one_sided) {
-            std::thread([client_fd, &store_mr, num_slots = (uint64_t)kvstore::RDMA_NUM_SLOTS, device_name]() {
-                handle_one_sided_client(client_fd, store_mr, num_slots, device_name);
+            std::thread([client_fd, &one_sided_store, num_slots = (uint64_t)kvstore::RDMA_NUM_SLOTS, device_name]() {
+                handle_one_sided_client(client_fd, one_sided_store, num_slots, device_name);
             }).detach();
         } else {
-            std::thread([client_fd, &store, device_name]() {
-                handle_two_sided_client(client_fd, store, device_name);
+            std::thread([client_fd, &rpc_store, device_name]() {
+                handle_two_sided_client(client_fd, rpc_store, device_name);
             }).detach();
         }
     }
 
     ::close(listen_fd);
-
-    if (one_sided) {
-        if (store_mr)   ibv_dereg_mr(store_mr);
-        if (shared_pd)  ibv_dealloc_pd(shared_pd);
-        if (shared_ctx) ibv_close_device(shared_ctx);
-    }
 
     return EXIT_SUCCESS;
 }
