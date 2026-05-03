@@ -21,13 +21,15 @@ CSV_PATH=""
 RESET=0
 DRY_RUN=0
 CPU_SSH=""
-CPU_REMOTE_DIR="~/CS2640-Final-Project"
+CPU_REMOTE_DIR=""
 CPU_CSV="experiments/cpu_utilization.csv"
 CPU_INTERVAL="0.20"
 SERVER_PID=""
 SERVER_PROCESS="kv_server"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CPU_REMOTE_DIR="$PROJECT_DIR"
 source "$SCRIPT_DIR/experiment_cpu.sh"
 
 usage() {
@@ -52,7 +54,7 @@ Options:
   --csv PATH           CSV output path. Default: OUTDIR/tcp_cloudlab_clients.csv.
   --build-dir DIR      Build directory. Default: build.
   --cpu-ssh USER@HOST  SSH target for the server node; enables CPU sampling.
-  --cpu-remote-dir DIR Server-node project dir. Default: ~/CS2640-Final-Project.
+  --cpu-remote-dir DIR Server-node project dir. Default: this checkout's absolute path.
   --cpu-csv PATH       Server-node CPU CSV path. Default: experiments/cpu_utilization.csv.
   --cpu-interval SEC   CPU sample interval. Default: 0.20.
   --server-pid PID     Existing server PID to sample. Default: pgrep -n -x kv_server.

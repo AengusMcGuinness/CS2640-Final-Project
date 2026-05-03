@@ -52,8 +52,14 @@ cpu_start_sampler() {
     metadata_flag="--metadata"
   fi
 
-  local remote_dir_q csv_q csv_dir_q label_q transport_q interval_q log_q
-  remote_dir_q="$(printf '%q' "$CPU_REMOTE_DIR")"
+  local remote_dir_expr csv_q csv_dir_q label_q transport_q interval_q log_q
+  if [[ "$CPU_REMOTE_DIR" == "~" ]]; then
+    remote_dir_expr='$HOME'
+  elif [[ "$CPU_REMOTE_DIR" == "~/"* ]]; then
+    remote_dir_expr='$HOME/'"$(printf '%q' "${CPU_REMOTE_DIR#~/}")"
+  else
+    remote_dir_expr="$(printf '%q' "$CPU_REMOTE_DIR")"
+  fi
   csv_q="$(printf '%q' "$CPU_CSV")"
   csv_dir_q="$(printf '%q' "$(dirname "$CPU_CSV")")"
   label_q="$(printf '%q' "$label")"
@@ -62,7 +68,7 @@ cpu_start_sampler() {
   log_q="$(printf '%q' "/tmp/cs2640_cpu_${transport}_${clients}_${metadata}_$$.log")"
 
   local remote_cmd
-  remote_cmd="cd $remote_dir_q && mkdir -p $csv_dir_q && nohup python3 scripts/measure_cpu.py --pid $pid --label $label_q --transport $transport_q --clients $clients $metadata_flag --csv $csv_q --interval $interval_q > $log_q 2>&1 < /dev/null & echo \$!"
+  remote_cmd="cd $remote_dir_expr && mkdir -p $csv_dir_q && nohup python3 scripts/measure_cpu.py --pid $pid --label $label_q --transport $transport_q --clients $clients $metadata_flag --csv $csv_q --interval $interval_q > $log_q 2>&1 < /dev/null & echo \$!"
 
   local sampler_pid
   sampler_pid="$(ssh "$CPU_SSH" "$remote_cmd")"
