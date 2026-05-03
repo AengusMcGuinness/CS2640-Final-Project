@@ -92,9 +92,11 @@ if(IBVERBS_LIB AND IBVERBS_INCLUDE)
             Threads::Threads
     )
 
-    # Two-sided and one-sided RDMA server
+    # Two-sided and one-sided RDMA server.
+    # Links project_core as well because two-sided mode uses the
+    # mutex-protected KeyValueStore implementation.
     add_executable(kv_server_rdma src/server/rdma_main.cpp)
-    target_link_libraries(kv_server_rdma PRIVATE rdma_core)
+    target_link_libraries(kv_server_rdma PRIVATE rdma_core project_core)
 
     # Interactive RDMA client (two-sided and one-sided modes)
     add_executable(kv_client_rdma src/client/rdma_client.cpp)
