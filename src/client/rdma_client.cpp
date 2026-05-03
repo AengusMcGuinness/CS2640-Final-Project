@@ -14,6 +14,7 @@
 //
 // One-sided benchmark flags:
 //   --benchmark          enable benchmark mode
+//   --clients N          concurrent RDMA connections (default 1)
 //   --ops N              measured operations (default 10000)
 //   --warmup N           warmup operations discarded before timing (default 1000)
 //   --keys N             key-space size; must match --preload on the server (default 1024)
@@ -45,12 +46,12 @@
 //
 //   # One-sided benchmark, no metadata, 4 client sweeps
 //   kv_client_rdma --host <ip> --mode one-sided --device mlx5_0 \
-//                  --benchmark --ops 10000 --warmup 1000 --keys 1024 \
+//                  --benchmark --clients 4 --ops 10000 --warmup 1000 --keys 1024 \
 //                  --csv experiments/rdma_one_sided_clients.csv
 //
 //   # One-sided benchmark with LRU metadata overhead
 //   kv_client_rdma --host <ip> --mode one-sided --device mlx5_0 \
-//                  --benchmark --ops 10000 --warmup 1000 --keys 1024 \
+//                  --benchmark --clients 4 --ops 10000 --warmup 1000 --keys 1024 \
 //                  --metadata \
 //                  --csv experiments/rdma_one_sided_metadata.csv
 
@@ -425,6 +426,7 @@ bool one_sided_set(net::RdmaContext&  ctx,
 void write_csv_row(const std::string& path,
                    const char*        host,
                    uint16_t           port,
+                   std::size_t        clients,
                    std::size_t        ops,
                    std::size_t        key_count,
                    std::size_t        warmup,
@@ -436,7 +438,9 @@ void write_csv_row(const std::string& path,
                    double             p95_us,
                    double             p99_us,
                    std::size_t        ok_ops,
-                   std::size_t        errors)
+                   std::size_t        errors,
+                   std::size_t        warmup_ok,
+                   std::size_t        warmup_errors)
 {
     std::ifstream probe(path);
     bool write_header = !probe.good() ||
@@ -456,10 +460,10 @@ void write_csv_row(const std::string& path,
                "warmup_ok_responses,warmup_errors\n";
     }
 
-    // Fixed fields for one-sided RDMA: single client, pure GET, no zipf skew.
+    // Fixed fields for one-sided RDMA: pure GET, no zipf skew.
     out << host           << ','   // host
         << port           << ','   // port
-        << 1              << ','   // clients (always 1 per process for one-sided)
+        << clients        << ','   // clients
         << ops            << ','   // operations
         << key_count      << ','   // keys
         << 0              << ','   // value_size (not tracked in one-sided path)
@@ -475,8 +479,8 @@ void write_csv_row(const std::string& path,
         << p99_us         << ','
         << ok_ops         << ','   // measured_ok_responses
         << errors         << ','   // measured_errors
-        << warmup         << ','   // warmup_ok_responses (assume all ok)
-        << 0              << '\n'; // warmup_errors
+        << warmup_ok      << ','   // warmup_ok_responses
+        << warmup_errors  << '\n'; // warmup_errors
 }
 
 void write_benchmark_csv_row(const std::string& path,
@@ -885,27 +889,44 @@ void run_one_sided_interactive(net::RdmaContext&   ctx,
 // One-sided benchmark loop
 // ---------------------------------------------------------------------------
 
-void run_one_sided_benchmark(net::RdmaContext&   ctx,
-                             const net::QpInfo&  server_info,
-                             const char*         host,
-                             uint16_t            port,
-                             std::size_t         ops,
-                             std::size_t         warmup_count,
-                             std::size_t         key_count,
-                             bool                simulate_metadata,
-                             const std::string&  csv_path)
+BenchmarkResult run_one_sided_worker(const char* host,
+                                     uint16_t    port,
+                                     const char* device_name,
+                                     std::size_t worker_index,
+                                     std::size_t worker_ops,
+                                     std::size_t warmup_ops,
+                                     std::size_t key_count,
+                                     bool        simulate_metadata)
 {
-    std::cout << "One-sided RDMA benchmark\n"
-              << "  ops="     << ops
-              << "  warmup="  << warmup_count
-              << "  keys="    << key_count
-              << "  metadata=" << (simulate_metadata ? "yes" : "no") << '\n';
+    BenchmarkResult result;
+    result.latencies_us.reserve(worker_ops);
+
+    net::RdmaContext ctx;
+    net::QpInfo server_info = {};
+    if (!connect_rdma_session(host, port, device_name, ctx, &server_info)) {
+        result.measured_errors += worker_ops;
+        result.warmup_errors += warmup_ops;
+        return result;
+    }
+
+    if (server_info.addr == 0 ||
+        server_info.num_slots != kvstore::RDMA_NUM_SLOTS) {
+        std::cerr << "kv_client_rdma: server did not export the expected one-sided region\n";
+        result.measured_errors += worker_ops;
+        result.warmup_errors += warmup_ops;
+        return result;
+    }
 
     // Register a local slot buffer for RDMA READ destinations.
     kvstore::RdmaSlot local_slot = {};
     ibv_mr* slot_mr = ctx.reg_mr(&local_slot, sizeof(local_slot),
                                  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
-    if (!slot_mr) { std::cerr << "reg_mr(slot) failed\n"; return; }
+    if (!slot_mr) {
+        std::cerr << "reg_mr(slot) failed\n";
+        result.measured_errors += worker_ops;
+        result.warmup_errors += warmup_ops;
+        return result;
+    }
 
     // Register an atomic result buffer for optional FETCH_AND_ADD.
     uint64_t atomic_result = 0;
@@ -916,58 +937,115 @@ void run_one_sided_benchmark(net::RdmaContext&   ctx,
         if (!atomic_mr) {
             ibv_dereg_mr(slot_mr);
             std::cerr << "reg_mr(atomic) failed\n";
-            return;
+            result.measured_errors += worker_ops;
+            result.warmup_errors += warmup_ops;
+            return result;
         }
     }
 
     // Use a seeded RNG for reproducible key selection.
-    std::mt19937_64 rng(0xC0FFEEULL);
+    std::mt19937_64 rng(0xC0FFEEULL + worker_index * 9973ULL);
     std::uniform_int_distribution<std::size_t> key_dist(0, key_count - 1);
 
-    // Warmup phase: exercise the RDMA path without recording latency.
-    std::cout << "  warming up...\n";
-    std::size_t warmup_errors = 0;
-    for (std::size_t i = 0; i < warmup_count; ++i) {
-        std::string key = make_key(key_dist(rng));
-        bool ok = one_sided_get(ctx, server_info, local_slot, slot_mr->lkey,
-                                key, simulate_metadata,
-                                atomic_result,
-                                atomic_mr ? atomic_mr->lkey : 0u);
-        if (!ok) ++warmup_errors;
-    }
-    if (warmup_errors > 0)
-        std::cerr << "  warning: " << warmup_errors << " warmup misses\n";
+    auto run_phase = [&](std::size_t count, bool measure) {
+        for (std::size_t i = 0; i < count; ++i) {
+            std::string key = make_key(key_dist(rng));
 
-    // Measured phase: record per-operation latency in microseconds.
-    std::vector<int64_t> latencies;
-    latencies.reserve(ops);
-    std::size_t ok_count    = 0;
-    std::size_t error_count = 0;
+            const auto t0 = Clock::now();
+            bool ok = one_sided_get(ctx, server_info, local_slot, slot_mr->lkey,
+                                    key, simulate_metadata,
+                                    atomic_result,
+                                    atomic_mr ? atomic_mr->lkey : 0u);
+            const auto t1 = Clock::now();
+
+            if (measure) {
+                if (ok) ++result.measured_ok_responses;
+                else    ++result.measured_errors;
+                result.latencies_us.push_back(
+                    std::chrono::duration_cast<Microseconds>(t1 - t0).count());
+            } else {
+                if (ok) ++result.warmup_ok_responses;
+                else    ++result.warmup_errors;
+            }
+        }
+    };
+
+    run_phase(warmup_ops, false);
+    run_phase(worker_ops, true);
+
+    if (atomic_mr) ibv_dereg_mr(atomic_mr);
+    ibv_dereg_mr(slot_mr);
+    return result;
+}
+
+bool run_one_sided_benchmark(const char*        host,
+                             uint16_t           port,
+                             const char*        device_name,
+                             std::size_t        clients,
+                             std::size_t        ops,
+                             std::size_t        warmup_count,
+                             std::size_t        key_count,
+                             bool               simulate_metadata,
+                             const std::string& csv_path)
+{
+    if (clients == 0 || ops == 0 || key_count == 0 || clients > ops) {
+        std::cerr << "kv_client_rdma: invalid one-sided benchmark arguments\n";
+        return false;
+    }
+
+    std::cout << "One-sided RDMA benchmark\n"
+              << "  clients=" << clients
+              << "  ops="     << ops
+              << "  warmup="  << warmup_count
+              << "  keys="    << key_count
+              << "  metadata=" << (simulate_metadata ? "yes" : "no") << '\n';
+
+    const std::size_t base_ops = ops / clients;
+    const std::size_t remainder = ops % clients;
+    const std::size_t warmup_base = warmup_count / clients;
+    const std::size_t warmup_remainder = warmup_count % clients;
+
+    std::vector<std::thread> workers;
+    std::vector<BenchmarkResult> results(clients);
+    workers.reserve(clients);
 
     std::cout << "  measuring...\n";
     const auto wall_start = Clock::now();
+    for (std::size_t i = 0; i < clients; ++i) {
+        const std::size_t worker_ops = base_ops + (i < remainder ? 1 : 0);
+        const std::size_t worker_warmup = warmup_base + (i < warmup_remainder ? 1 : 0);
 
-    for (std::size_t i = 0; i < ops; ++i) {
-        std::string key = make_key(key_dist(rng));
+        workers.emplace_back([&, i, worker_ops, worker_warmup]() {
+            results[i] = run_one_sided_worker(host, port, device_name,
+                                              i, worker_ops, worker_warmup,
+                                              key_count, simulate_metadata);
+        });
+    }
 
-        const auto t0 = Clock::now();
-        bool ok = one_sided_get(ctx, server_info, local_slot, slot_mr->lkey,
-                                key, simulate_metadata,
-                                atomic_result,
-                                atomic_mr ? atomic_mr->lkey : 0u);
-        const auto t1 = Clock::now();
-
-        latencies.push_back(
-            std::chrono::duration_cast<Microseconds>(t1 - t0).count());
-
-        if (ok) ++ok_count;
-        else    ++error_count;
+    for (auto& worker : workers) {
+        worker.join();
     }
 
     const auto wall_end = Clock::now();
     double elapsed_s = std::chrono::duration_cast<
         std::chrono::duration<double>>(wall_end - wall_start).count();
     double throughput = static_cast<double>(ops) / elapsed_s;
+
+    std::vector<int64_t> latencies;
+    std::size_t ok_count = 0;
+    std::size_t error_count = 0;
+    std::size_t warmup_ok = 0;
+    std::size_t warmup_errors = 0;
+
+    for (const auto& worker_result : results) {
+        ok_count += worker_result.measured_ok_responses;
+        error_count += worker_result.measured_errors;
+        warmup_ok += worker_result.warmup_ok_responses;
+        warmup_errors += worker_result.warmup_errors;
+        latencies.insert(latencies.end(),
+                         worker_result.latencies_us.begin(),
+                         worker_result.latencies_us.end());
+    }
 
     // Compute statistics.
     std::sort(latencies.begin(), latencies.end());
@@ -997,18 +1075,20 @@ void run_one_sided_benchmark(net::RdmaContext&   ctx,
               << "  p95_latency_us:   " << p95         << '\n'
               << "  p99_latency_us:   " << p99         << '\n'
               << "  ok_ops:           " << ok_count    << '\n'
-              << "  errors:           " << error_count << '\n';
+              << "  errors:           " << error_count << '\n'
+              << "  warmup_ok:        " << warmup_ok << '\n'
+              << "  warmup_errors:    " << warmup_errors << '\n';
 
     // Write CSV row if a path was given.
     if (!csv_path.empty()) {
-        write_csv_row(csv_path, host, port, ops, key_count, warmup_count,
+        write_csv_row(csv_path, host, port, clients, ops, key_count, warmup_count,
                       simulate_metadata, elapsed_s, throughput,
-                      mean_us, p50, p95, p99, ok_count, error_count);
+                      mean_us, p50, p95, p99, ok_count, error_count,
+                      warmup_ok, warmup_errors);
         std::cout << "  csv: " << csv_path << '\n';
     }
 
-    if (atomic_mr) ibv_dereg_mr(atomic_mr);
-    ibv_dereg_mr(slot_mr);
+    return error_count == 0 && warmup_errors == 0;
 }
 
 } // namespace
@@ -1062,6 +1142,14 @@ int main(int argc, char* argv[]) {
              : EXIT_FAILURE;
     }
 
+    if (one_sided && benchmark_mode) {
+        return run_one_sided_benchmark(host, port, device_name,
+                                       clients, ops, warmup_count, key_count,
+                                       simulate_metadata, csv_path)
+             ? EXIT_SUCCESS
+             : EXIT_FAILURE;
+    }
+
     net::RdmaContext ctx;
     net::QpInfo server_info = {};
     if (!connect_rdma_session(host, port, device_name, ctx, &server_info)) {
@@ -1075,11 +1163,7 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    if (one_sided && benchmark_mode) {
-        run_one_sided_benchmark(ctx, server_info, host, port,
-                                ops, warmup_count, key_count,
-                                simulate_metadata, csv_path);
-    } else if (one_sided) {
+    if (one_sided) {
         run_one_sided_interactive(ctx, server_info);
     } else {
         run_two_sided(ctx);
