@@ -39,6 +39,8 @@ NET_SSH=""
 NETDEV=""
 NET_SERVER_IP=""
 NET_CSV=""
+METRICS_CONTROL=""
+METRICS_PORT="19191"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -84,6 +86,8 @@ Options:
   --net-server-ip IP   Server IP used for NIC auto-detection. Default: --host.
   --net-csv PATH       Local NIC CSV path. Default: OUTDIR/network_utilization.csv.
   --metrics-ssh TARGET Convenience: sets both --cpu-ssh and --net-ssh.
+  --metrics-control H  Metrics collector host or host:port. No SSH required.
+  --metrics-port PORT  Metrics collector port. Default: 19191.
   --reset              Delete this script's CSVs before running.
   --dry-run            Print commands without running them.
   -h, --help           Show this help text.
@@ -138,6 +142,8 @@ while [[ $# -gt 0 ]]; do
     --net-server-ip) NET_SERVER_IP="${2:-}"; shift 2 ;;
     --net-csv) NET_CSV="${2:-}"; shift 2 ;;
     --metrics-ssh) CPU_SSH="${2:-}"; NET_SSH="${2:-}"; shift 2 ;;
+    --metrics-control) METRICS_CONTROL="${2:-}"; shift 2 ;;
+    --metrics-port) METRICS_PORT="${2:-}"; shift 2 ;;
     --reset) RESET=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;

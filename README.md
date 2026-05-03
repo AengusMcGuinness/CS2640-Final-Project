@@ -91,6 +91,25 @@ export SERVER_IP=10.10.x.x
 export SERVER_SSH=AMcG@hp080.utah.cloudlab.us
 ```
 
+If the client node cannot SSH to the server node, run the metrics collector
+directly on the server instead. Start it in a second server terminal after the
+benchmark server is running:
+
+```bash
+# For TCP:
+python3 scripts/metrics_collector.py \
+  --process-name kv_server \
+  --server-ip "$SERVER_IP"
+
+# For RDMA:
+python3 scripts/metrics_collector.py \
+  --process-name kv_server_rdma \
+  --server-ip "$SERVER_IP"
+```
+
+Then use `--metrics-control "$SERVER_IP"` on the client runner instead of
+`--metrics-ssh "$SERVER_SSH"`.
+
 TCP:
 
 ```bash
@@ -99,6 +118,8 @@ TCP:
 
 # Client node:
 ./scripts/run_tcp_experiments.sh --host "$SERVER_IP" --metrics-ssh "$SERVER_SSH" --reset
+# Or, if metrics_collector.py is running on the server:
+./scripts/run_tcp_experiments.sh --host "$SERVER_IP" --metrics-control "$SERVER_IP" --reset
 ```
 
 Two-sided RDMA:
@@ -109,6 +130,8 @@ Two-sided RDMA:
 
 # Client node:
 ./scripts/run_two_sided_rdma_experiments.sh --host "$SERVER_IP" --metrics-ssh "$SERVER_SSH" --reset
+# Or, if metrics_collector.py is running on the server:
+./scripts/run_two_sided_rdma_experiments.sh --host "$SERVER_IP" --metrics-control "$SERVER_IP" --reset
 ```
 
 One-sided RDMA:
@@ -119,6 +142,8 @@ One-sided RDMA:
 
 # Client node:
 ./scripts/run_one_sided_rdma_experiments.sh --host "$SERVER_IP" --metrics-ssh "$SERVER_SSH" --reset
+# Or, if metrics_collector.py is running on the server:
+./scripts/run_one_sided_rdma_experiments.sh --host "$SERVER_IP" --metrics-control "$SERVER_IP" --reset
 ```
 
 Each script accepts `--help`, `--dry-run`, `--clients "1 2 4 8"`, `--outdir experiments`, and the usual benchmark knobs. The two-sided script runs the client-count, get-ratio, Zipf, and value-size sweeps; the one-sided script runs both no-metadata and metadata sweeps.

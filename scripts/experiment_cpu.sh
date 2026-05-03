@@ -13,6 +13,10 @@ net_enabled() {
   [[ -n "${NET_SSH:-}" ]]
 }
 
+metrics_control_enabled() {
+  [[ -n "${METRICS_CONTROL:-}" ]]
+}
+
 cpu_resolve_server_pid() {
   if [[ -n "${SERVER_PID:-}" ]]; then
     printf '%s\n' "$SERVER_PID"
@@ -179,14 +183,33 @@ run_with_optional_metrics() {
   local operations="$5"
   shift 5
 
+  local run_id=""
+  if metrics_control_enabled; then
+    run_id="${transport}_${clients}_${metadata}_$(date +%s%N)_$$"
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      echo "dry-run: would tell metrics collector $METRICS_CONTROL to start run_id=$run_id label=$label clients=$clients" >&2
+    else
+      python3 "$SCRIPT_DIR/metrics_client.py" \
+        --server "$METRICS_CONTROL" \
+        --port "${METRICS_PORT:-19191}" \
+        start \
+        --run-id "$run_id" \
+        --label "$label" \
+        --transport "$transport" \
+        --clients "$clients" \
+        --metadata "$metadata" \
+        --operations "$operations"
+    fi
+  fi
+
   local sampler_pid=""
-  if cpu_enabled; then
+  if ! metrics_control_enabled && cpu_enabled; then
     sampler_pid="$(cpu_start_sampler "$label" "$transport" "$clients" "$metadata")"
   fi
 
   local netdev=""
   local net_before=""
-  if net_enabled; then
+  if ! metrics_control_enabled && net_enabled; then
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
       echo "dry-run: would sample server NIC counters for label=$label clients=$clients operations=$operations" >&2
     else
@@ -204,13 +227,27 @@ run_with_optional_metrics() {
   local rc=$?
   set -e
 
-  if net_enabled && [[ "${DRY_RUN:-0}" -eq 0 ]]; then
+  if metrics_control_enabled; then
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      echo "dry-run: would tell metrics collector $METRICS_CONTROL to stop run_id=$run_id" >&2
+    else
+      python3 "$SCRIPT_DIR/metrics_client.py" \
+        --server "$METRICS_CONTROL" \
+        --port "${METRICS_PORT:-19191}" \
+        stop \
+        --run-id "$run_id" \
+        --cpu-csv "$CPU_CSV" \
+        --network-csv "$NET_CSV"
+    fi
+  fi
+
+  if ! metrics_control_enabled && net_enabled && [[ "${DRY_RUN:-0}" -eq 0 ]]; then
     local net_after
     net_after="$(net_read_counters "$netdev")"
     net_append_row "$label" "$transport" "$clients" "$metadata" "$operations" "$netdev" "$net_before" "$net_after"
   fi
 
-  if cpu_enabled; then
+  if ! metrics_control_enabled && cpu_enabled; then
     cpu_stop_sampler "$sampler_pid"
   fi
 
@@ -228,6 +265,9 @@ run_with_optional_cpu() {
 
 cpu_sync_csv() {
   local outdir="$1"
+  if metrics_control_enabled; then
+    return 0
+  fi
   if ! cpu_enabled; then
     return 0
   fi
